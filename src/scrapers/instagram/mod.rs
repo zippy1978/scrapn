@@ -95,37 +95,45 @@ impl InstagramScraper {
         let status = response.status();
         
         if status == reqwest::StatusCode::NOT_FOUND {
-            error!("Profile not found: {}", username);
+            let body = response.text().await.unwrap_or_else(|_| "<failed to read body>".to_string());
+            error!("Profile not found: {}. Body: {}", username, body);
             return Err(ScraperError::ProfileNotFound);
         }
         
         if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            error!("Rate limited by Instagram");
+            let body = response.text().await.unwrap_or_else(|_| "<failed to read body>".to_string());
+            error!("Rate limited by Instagram. Body: {}", body);
             return Err(ScraperError::RateLimited);
         }
         
         if !status.is_success() {
-            error!("Failed to fetch profile, status: {}", status);
+            let body = response.text().await.unwrap_or_else(|_| "<failed to read body>".to_string());
+            error!("Failed to fetch profile, status: {}. Body: {}", status, body);
             return Err(ScraperError::ParsingError(format!("HTTP error status: {}", status)));
         }
         
         // Try to get JSON data using the API-like endpoint
-        if let Ok(json_data) = response.json::<Value>().await {
-            // Check if the profile is private
-            if let Some(is_private) = json_data.get("graphql")
-                .and_then(|g| g.get("user"))
-                .and_then(|u| u.get("is_private"))
-                .and_then(|p| p.as_bool()) 
-            {
-                if is_private {
-                    error!("Profile is private: {}", username);
-                    return Err(ScraperError::PrivateProfile);
+        match response.json::<Value>().await {
+            Ok(json_data) => {
+                // Check if the profile is private
+                if let Some(is_private) = json_data.get("graphql")
+                    .and_then(|g| g.get("user"))
+                    .and_then(|u| u.get("is_private"))
+                    .and_then(|p| p.as_bool()) 
+                {
+                    if is_private {
+                        error!("Profile is private: {}", username);
+                        return Err(ScraperError::PrivateProfile);
+                    }
                 }
-            }
-            
-            if let Some(user_data) = self.extract_user_data_from_json(&json_data, username) {
-                info!("Successfully extracted user data from web API for {}", username);
-                return Ok(user_data);
+                
+                if let Some(user_data) = self.extract_user_data_from_json(&json_data, username) {
+                    info!("Successfully extracted user data from web API for {}", username);
+                    return Ok(user_data);
+                }
+            },
+            Err(e) => {
+                error!("Failed to parse JSON response: {}. Error: {}", username, e);
             }
         }
         
@@ -150,30 +158,38 @@ impl InstagramScraper {
         let status = response.status();
         
         if !status.is_success() {
+            let body = response.text().await.unwrap_or_else(|_| "<failed to read body>".to_string());
             if status == reqwest::StatusCode::NOT_FOUND {
-                error!("Profile not found via mobile API: {}", username);
+                error!("Profile not found via mobile API: {}. Body: {}", username, body);
                 return Err(ScraperError::ProfileNotFound);
             }
             
-            error!("Failed to fetch profile via mobile API, status: {}", status);
+            error!("Failed to fetch profile via mobile API, status: {}. Body: {}", status, body);
             return Err(ScraperError::ParsingError(format!("HTTP error status: {}", status)));
         }
         
         // Parse the response
-        let json_data = response.json::<Value>().await?;
-        
-        if let Some(data) = json_data.get("data").and_then(|d| d.get("user")) {
-            // Check if the profile is private
-            if let Some(is_private) = data.get("is_private").and_then(|v| v.as_bool()) {
-                if is_private {
-                    error!("Profile is private: {}", username);
-                    return Err(ScraperError::PrivateProfile);
+        match response.json::<Value>().await {
+            Ok(json_data) => {
+                if let Some(data) = json_data.get("data").and_then(|d| d.get("user")) {
+                    // Check if the profile is private
+                    if let Some(is_private) = data.get("is_private").and_then(|v| v.as_bool()) {
+                        if is_private {
+                            error!("Profile is private: {}", username);
+                            return Err(ScraperError::PrivateProfile);
+                        }
+                    }
+                    
+                    if let Some(user) = self.extract_user_data_from_api_response(data, username) {
+                        info!("Successfully extracted user data from mobile API for {}", username);
+                        return Ok(user);
+                    }
+                } else {
+                    error!("User data not found in response. Full JSON: {}", json_data);
                 }
-            }
-            
-            if let Some(user) = self.extract_user_data_from_api_response(data, username) {
-                info!("Successfully extracted user data from mobile API for {}", username);
-                return Ok(user);
+            },
+            Err(e) => {
+                error!("Failed to parse mobile API JSON response: {}. Error: {}", username, e);
             }
         }
         
@@ -191,9 +207,11 @@ impl InstagramScraper {
             .send()
             .await?;
         
-        if !response.status().is_success() {
-            error!("Failed to fetch profile HTML, status: {}", response.status());
-            return Err(ScraperError::ParsingError(format!("HTTP error status: {}", response.status())));
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_else(|_| "<failed to read body>".to_string());
+            error!("Failed to fetch profile HTML, status: {}. Body: {}", status, body);
+            return Err(ScraperError::ParsingError(format!("HTTP error status: {}", status)));
         }
         
         let html = response.text().await?;
@@ -203,6 +221,10 @@ impl InstagramScraper {
             info!("Successfully extracted user data from HTML for {}", username);
             return Ok(user_data);
         }
+        
+        // Log a portion of the HTML to help debug extraction failures
+        let preview_length = std::cmp::min(500, html.len());
+        error!("Failed to extract user data from HTML. Preview of HTML: {}...", &html[..preview_length]);
         
         Err(ScraperError::ParsingError("Could not extract data from HTML".to_string()))
     }
