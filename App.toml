@@ -10,3 +10,6 @@ user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 # Instagram usernames that are allowed to be scraped (comment out to allow all)
 # Better use env INSTAGRAM_USERNAME_WHITELIST
 #instagram_username_whitelist = ["user1", "user2", "user3"] 
+# Instagram session cookies for authenticated requests (helps bypass rate limits)
+# Better use env INSTAGRAM_COOKIES
+#instagram_cookies = "sessionid=YOUR_SESSION_ID; ds_user_id=YOUR_USER_ID; csrftoken=YOUR_CSRF_TOKEN" 

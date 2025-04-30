@@ -8,5 +8,6 @@ pub struct AppConfig {
     pub timeout: u64,
     pub user_agent: String,
     pub instagram_username_whitelist: Option<Vec<String>>,
+    pub instagram_cookies: Option<String>,
 }
  

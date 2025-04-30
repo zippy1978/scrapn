@@ -48,11 +48,25 @@ user_agent = "..."
 ### Environment Variables
 
 - `INSTAGRAM_USERNAME_WHITELIST` - Optional comma-separated list of Instagram usernames that are allowed to be scraped. If set, only these usernames will be accessible through the API.
+- `INSTAGRAM_COOKIES` - Optional Instagram session cookies for authenticated requests. This helps bypass rate limits and access restricted content.
 
 Example:
 ```
 INSTAGRAM_USERNAME_WHITELIST=username1,username2,username3
+INSTAGRAM_COOKIES=sessionid=YOUR_SESSION_ID; ds_user_id=YOUR_USER_ID; csrftoken=YOUR_CSRF_TOKEN
 ```
+
+#### Obtaining Instagram Cookies
+
+To get your Instagram cookies:
+1. Log in to Instagram in your browser
+2. Open browser developer tools (F12 or right-click > Inspect)
+3. Go to the Application/Storage tab
+4. Find Cookies > www.instagram.com
+5. Copy the values of `sessionid`, `ds_user_id`, and other cookies
+6. Format as: `sessionid=ABC123; ds_user_id=123456; csrftoken=XYZ789`
+
+**Note:** Cookies typically expire after a few weeks or if Instagram detects unusual activity. You may need to refresh them periodically.
 
 ## Building and Running
 
@@ -91,4 +105,4 @@ The server will start on port 8000, accessible at http://localhost:8000.
 
 ## Warning
 
-Web scraping may violate Instagram's Terms of Service. Use responsibly and at your own risk. 
+Web scraping may violate Instagram's Terms of Service. Use responsibly and at your own risk.

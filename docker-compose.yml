@@ -10,4 +10,8 @@ services:
       - ./logs:/home/scrapn/app/logs
     environment:
       - RUST_LOG=debug,rocket=trace
-      - ROCKET_ADDRESS=0.0.0.0 
+      - ROCKET_ADDRESS=0.0.0.0
+      # Uncomment and set Instagram cookies for authenticated requests (helps bypass rate limits)
+      # - INSTAGRAM_COOKIES=sessionid=YOUR_SESSION_ID; ds_user_id=YOUR_USER_ID; csrftoken=YOUR_CSRF_TOKEN
+      # Uncomment and set Instagram username whitelist (comma-separated)
+      # - INSTAGRAM_USERNAME_WHITELIST=username1,username2,username3 

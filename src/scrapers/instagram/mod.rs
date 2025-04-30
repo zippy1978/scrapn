@@ -78,8 +78,8 @@ impl InstagramScraper {
         
         info!("Trying web API endpoint for {}", username);
         
-        // Send request with appropriate headers to mimic a browser
-        let response = self.client.get(&url)
+        // Build request with appropriate headers to mimic a browser
+        let mut request = self.client.get(&url)
             .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
             .header("Accept-Language", "en-US,en;q=0.5")
             .header("Connection", "keep-alive")
@@ -88,9 +88,15 @@ impl InstagramScraper {
             .header("Sec-Fetch-Mode", "navigate")
             .header("Sec-Fetch-Site", "none")
             .header("Sec-Fetch-User", "?1")
-            .header("TE", "trailers")
-            .send()
-            .await?;
+            .header("TE", "trailers");
+        
+        // Add cookies if available in config
+        if let Some(cookies) = &self.config.instagram_cookies {
+            info!("Using Instagram cookies for authentication");
+            request = request.header("Cookie", cookies);
+        }
+        
+        let response = request.send().await?;
         
         let status = response.status();
         
@@ -146,14 +152,21 @@ impl InstagramScraper {
         
         info!("Trying mobile API endpoint for {}", username);
         
-        let response = self.client.get(&url)
+        // Build the request with mobile headers
+        let mut request = self.client.get(&url)
             .header("User-Agent", "Instagram 219.0.0.12.117 Android")
             .header("Accept", "application/json")
             .header("X-IG-App-ID", "936619743392459") // This is a widely known app ID
             .header("X-ASBD-ID", "198387")
-            .header("X-IG-WWW-Claim", "0")
-            .send()
-            .await?;
+            .header("X-IG-WWW-Claim", "0");
+        
+        // Add cookies if available in config
+        if let Some(cookies) = &self.config.instagram_cookies {
+            info!("Using Instagram cookies for mobile API authentication");
+            request = request.header("Cookie", cookies);
+        }
+        
+        let response = request.send().await?;
         
         let status = response.status();
         
@@ -162,6 +175,13 @@ impl InstagramScraper {
             if status == reqwest::StatusCode::NOT_FOUND {
                 error!("Profile not found via mobile API: {}. Body: {}", username, body);
                 return Err(ScraperError::ProfileNotFound);
+            }
+            
+            if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+                error!("Unauthorized access to mobile API (cookies may be required): {}. Body: {}", username, body);
+                if body.contains("Please wait a few minutes before you try again") {
+                    return Err(ScraperError::RateLimited);
+                }
             }
             
             error!("Failed to fetch profile via mobile API, status: {}. Body: {}", status, body);
@@ -201,11 +221,18 @@ impl InstagramScraper {
         info!("Falling back to HTML scraping for {}", username);
         let url = format!("https://www.instagram.com/{}/", username);
         
-        let response = self.client.get(&url)
+        // Build the request with browser-like headers
+        let mut request = self.client.get(&url)
             .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
-            .header("Accept-Language", "en-US,en;q=0.5")
-            .send()
-            .await?;
+            .header("Accept-Language", "en-US,en;q=0.5");
+        
+        // Add cookies if available in config
+        if let Some(cookies) = &self.config.instagram_cookies {
+            info!("Using Instagram cookies for HTML scraping");
+            request = request.header("Cookie", cookies);
+        }
+        
+        let response = request.send().await?;
         
         let status = response.status();
         if !status.is_success() {
