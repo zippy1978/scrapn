@@ -1,0 +1,12 @@
+[default]
+port = 8000
+address = "0.0.0.0"
+log_level = "debug"
+# Cache duration in days
+instagram_cache_duration = 1
+# Scraping timeout in seconds
+timeout = 30
+user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+# Instagram usernames that are allowed to be scraped (comment out to allow all)
+# Better use env INSTAGRAM_USERNAME_WHITELIST
+#instagram_username_whitelist = ["user1", "user2", "user3"] 

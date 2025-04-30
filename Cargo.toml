@@ -1,0 +1,23 @@
+[package]
+name = "scrapn"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rocket = { version = "0.5.0", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+reqwest = { version = "0.11", features = ["json"] }
+scraper = "0.18.1"
+chrono = { version = "0.4", features = ["serde"] }
+log = "0.4"
+env_logger = "0.10"
+lazy_static = "1.4"
+regex = "1.9"
+tokio = { version = "1", features = ["full"] }
+config = "0.13"
+toml = "0.8"
+thiserror = "1.0"
+parking_lot = "0.12"
+futures = "0.3"
+dotenv = "0.15.0"

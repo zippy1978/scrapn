@@ -1,0 +1,13 @@
+services:
+  scrapn:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    volumes:
+      - ./logs:/home/scrapn/app/logs
+    environment:
+      - RUST_LOG=debug,rocket=trace
+      - ROCKET_ADDRESS=0.0.0.0 
