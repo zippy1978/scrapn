@@ -53,6 +53,7 @@ pub struct InstagramUser {
     pub posts: Option<Vec<InstagramPost>>,
     pub reels: Option<Vec<InstagramReel>>,
     pub scraped_at: DateTime<Utc>,
+    pub posts_limited: bool, // Indicates that the posts array is limited and not complete
 }
 
 // Response wrapper for API to include timing info

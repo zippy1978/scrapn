@@ -54,6 +54,16 @@ impl InstagramCache {
         None
     }
 
+    pub fn get_user_even_expired(&self, username: &str) -> Option<(InstagramUser, u64)> {
+        let users = self.users.read();
+        
+        if let Some(entry) = users.get(username) {
+            return Some((entry.data.clone(), entry.age().as_secs()));
+        }
+        
+        None
+    }
+
     pub fn store_user(&self, user: InstagramUser) {
         let mut users = self.users.write();
         users.insert(
@@ -68,8 +78,20 @@ impl InstagramCache {
         user.posts.map(|posts| (posts, age))
     }
 
+    pub fn get_posts_even_expired(&self, username: &str) -> Option<(Vec<InstagramPost>, u64)> {
+        let (user, age) = self.get_user_even_expired(username)?;
+        
+        user.posts.map(|posts| (posts, age))
+    }
+
     pub fn get_reels(&self, username: &str) -> Option<(Vec<InstagramReel>, u64)> {
         let (user, age) = self.get_user(username)?;
+        
+        user.reels.map(|reels| (reels, age))
+    }
+
+    pub fn get_reels_even_expired(&self, username: &str) -> Option<(Vec<InstagramReel>, u64)> {
+        let (user, age) = self.get_user_even_expired(username)?;
         
         user.reels.map(|reels| (reels, age))
     }

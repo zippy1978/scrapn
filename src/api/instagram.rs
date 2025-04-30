@@ -84,7 +84,7 @@ pub async fn get_user(
         }
     }
     
-    // Check cache first
+    // Check cache first (non-expired data)
     if let Some((user, age)) = cache.get_user(username) {
         return Ok(Json(InstagramUserResponse {
             data: user,
@@ -93,17 +93,35 @@ pub async fn get_user(
         }));
     }
     
-    // Need to scrape
-    let user = scraper.scrape_user(username).await?;
-    
-    // Store in cache
-    cache.store_user(user.clone());
-    
-    Ok(Json(InstagramUserResponse {
-        data: user,
-        from_cache: false,
-        cache_age: None,
-    }))
+    // Try to scrape fresh data
+    match scraper.scrape_user(username).await {
+        Ok(user) => {
+            // Successfully retrieved fresh data, store in cache
+            cache.store_user(user.clone());
+            
+            Ok(Json(InstagramUserResponse {
+                data: user,
+                from_cache: false,
+                cache_age: None,
+            }))
+        },
+        Err(err) => {
+            // Scraping failed, try to use expired cache data as fallback
+            if let Some((user, age)) = cache.get_user_even_expired(username) {
+                // Log that we're using expired cache as fallback
+                log::warn!("Using expired cache for {} as fallback due to scraping error: {:?}", username, err);
+                
+                Ok(Json(InstagramUserResponse {
+                    data: user,
+                    from_cache: true,
+                    cache_age: Some(age),
+                }))
+            } else {
+                // No cache data available, return the error
+                Err(err.into())
+            }
+        }
+    }
 }
 
 #[get("/<username>/posts")]
@@ -120,7 +138,7 @@ pub async fn get_posts(
         }
     }
     
-    // Check cache first
+    // Check cache first (non-expired data)
     if let Some((posts, age)) = cache.get_posts(username) {
         return Ok(Json(InstagramPostsResponse {
             data: posts,
@@ -129,20 +147,38 @@ pub async fn get_posts(
         }));
     }
     
-    // Need to scrape user to get posts
-    let user = scraper.scrape_user(username).await?;
-    
-    // Store in cache
-    cache.store_user(user.clone());
-    
-    // Return posts
-    let posts = user.posts.unwrap_or_default();
-    
-    Ok(Json(InstagramPostsResponse {
-        data: posts,
-        from_cache: false,
-        cache_age: None,
-    }))
+    // Try to scrape fresh data
+    match scraper.scrape_user(username).await {
+        Ok(user) => {
+            // Successfully retrieved fresh data, store in cache
+            cache.store_user(user.clone());
+            
+            // Return posts
+            let posts = user.posts.unwrap_or_default();
+            
+            Ok(Json(InstagramPostsResponse {
+                data: posts,
+                from_cache: false,
+                cache_age: None,
+            }))
+        },
+        Err(err) => {
+            // Scraping failed, try to use expired cache data as fallback
+            if let Some((posts, age)) = cache.get_posts_even_expired(username) {
+                // Log that we're using expired cache as fallback
+                log::warn!("Using expired cache for {}/posts as fallback due to scraping error: {:?}", username, err);
+                
+                Ok(Json(InstagramPostsResponse {
+                    data: posts,
+                    from_cache: true,
+                    cache_age: Some(age),
+                }))
+            } else {
+                // No cache data available, return the error
+                Err(err.into())
+            }
+        }
+    }
 }
 
 #[get("/<username>/reels")]
@@ -159,7 +195,7 @@ pub async fn get_reels(
         }
     }
     
-    // Check cache first
+    // Check cache first (non-expired data)
     if let Some((reels, age)) = cache.get_reels(username) {
         return Ok(Json(InstagramReelsResponse {
             data: reels,
@@ -168,18 +204,36 @@ pub async fn get_reels(
         }));
     }
     
-    // Need to scrape user to get reels
-    let user = scraper.scrape_user(username).await?;
-    
-    // Store in cache
-    cache.store_user(user.clone());
-    
-    // Return reels
-    let reels = user.reels.unwrap_or_default();
-    
-    Ok(Json(InstagramReelsResponse {
-        data: reels,
-        from_cache: false,
-        cache_age: None,
-    }))
+    // Try to scrape fresh data
+    match scraper.scrape_user(username).await {
+        Ok(user) => {
+            // Successfully retrieved fresh data, store in cache
+            cache.store_user(user.clone());
+            
+            // Return reels
+            let reels = user.reels.unwrap_or_default();
+            
+            Ok(Json(InstagramReelsResponse {
+                data: reels,
+                from_cache: false,
+                cache_age: None,
+            }))
+        },
+        Err(err) => {
+            // Scraping failed, try to use expired cache data as fallback
+            if let Some((reels, age)) = cache.get_reels_even_expired(username) {
+                // Log that we're using expired cache as fallback
+                log::warn!("Using expired cache for {}/reels as fallback due to scraping error: {:?}", username, err);
+                
+                Ok(Json(InstagramReelsResponse {
+                    data: reels,
+                    from_cache: true,
+                    cache_age: Some(age),
+                }))
+            } else {
+                // No cache data available, return the error
+                Err(err.into())
+            }
+        }
+    }
 } 
