@@ -1,6 +1,8 @@
 use rocket::serde::json::Json;
 use rocket::State;
 use rocket::http::Status;
+use rocket::{request::Request, response::{self, Response, Responder}};
+use serde_json::json;
 
 use crate::models::instagram::{InstagramUserResponse, InstagramPostsResponse, InstagramReelsResponse};
 use crate::scrapers::instagram::{InstagramScraper, ScraperError};
@@ -8,11 +10,9 @@ use crate::cache::InstagramCache;
 use crate::config::AppConfig;
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub enum ApiError {
     ScraperError(ScraperError),
-    InternalError(String),
-    Forbidden(String),
+    SerializationError(String),
 }
 
 impl From<ScraperError> for ApiError {
@@ -22,7 +22,7 @@ impl From<ScraperError> for ApiError {
 }
 
 impl<'r> rocket::response::Responder<'r, 'static> for ApiError {
-    fn respond_to(self, _request: &'r rocket::Request<'_>) -> rocket::response::Result<'static> {
+    fn respond_to(self, _: &'r rocket::Request<'_>) -> rocket::response::Result<'static> {
         match self {
             ApiError::ScraperError(ScraperError::ProfileNotFound) => {
                 rocket::Response::build()
@@ -30,22 +30,70 @@ impl<'r> rocket::response::Responder<'r, 'static> for ApiError {
                     .sized_body(None, std::io::Cursor::new("Profile not found"))
                     .ok()
             },
-            ApiError::ScraperError(ScraperError::RateLimited) => {
-                rocket::Response::build()
-                    .status(Status::TooManyRequests)
-                    .sized_body(None, std::io::Cursor::new("Rate limited by Instagram"))
-                    .ok()
-            },
             ApiError::ScraperError(ScraperError::PrivateProfile) => {
+                let body = json!({
+                    "error": "Profile is private",
+                    "message": "The requested profile is private and cannot be accessed"
+                }).to_string();
+                
                 rocket::Response::build()
                     .status(Status::Forbidden)
-                    .sized_body(None, std::io::Cursor::new("Private profile"))
+                    .sized_body(None, std::io::Cursor::new(body))
                     .ok()
             },
-            ApiError::ScraperError(ScraperError::NetworkError(e)) => {
+            ApiError::ScraperError(ScraperError::RateLimited) => {
+                let body = json!({
+                    "error": "Rate limited",
+                    "message": "Too many requests, please try again later"
+                }).to_string();
+                
+                rocket::Response::build()
+                    .status(Status::TooManyRequests)
+                    .sized_body(None, std::io::Cursor::new(body))
+                    .ok()
+            },
+            ApiError::ScraperError(ScraperError::UnauthorizedAccess(message)) => {
+                let body = json!({
+                    "error": "Unauthorized",
+                    "message": message
+                }).to_string();
+                
+                rocket::Response::build()
+                    .status(Status::Unauthorized)
+                    .sized_body(None, std::io::Cursor::new(body))
+                    .ok()
+            },
+            ApiError::ScraperError(ScraperError::ProxyError(error)) => {
+                let body = json!({
+                    "error": "Proxy error",
+                    "message": error
+                }).to_string();
+                
+                rocket::Response::build()
+                    .status(Status::BadGateway)
+                    .sized_body(None, std::io::Cursor::new(body))
+                    .ok()
+            },
+            ApiError::ScraperError(ScraperError::AllProxiesFailed) => {
+                let body = json!({
+                    "error": "All proxies failed",
+                    "message": "All configured proxies failed to connect"
+                }).to_string();
+                
                 rocket::Response::build()
                     .status(Status::ServiceUnavailable)
-                    .sized_body(None, std::io::Cursor::new(format!("Network error: {}", e)))
+                    .sized_body(None, std::io::Cursor::new(body))
+                    .ok()
+            },
+            ApiError::ScraperError(ScraperError::NetworkError(error)) => {
+                let body = json!({
+                    "error": "Network error",
+                    "message": error.to_string()
+                }).to_string();
+                
+                rocket::Response::build()
+                    .status(Status::ServiceUnavailable)
+                    .sized_body(None, std::io::Cursor::new(body))
                     .ok()
             },
             ApiError::ScraperError(ScraperError::ParsingError(e)) => {
@@ -54,15 +102,9 @@ impl<'r> rocket::response::Responder<'r, 'static> for ApiError {
                     .sized_body(None, std::io::Cursor::new(format!("Error parsing Instagram page: {}", e)))
                     .ok()
             },
-            ApiError::InternalError(e) => {
+            ApiError::SerializationError(e) => {
                 rocket::Response::build()
                     .status(Status::InternalServerError)
-                    .sized_body(None, std::io::Cursor::new(format!("Internal error: {}", e)))
-                    .ok()
-            },
-            ApiError::Forbidden(e) => {
-                rocket::Response::build()
-                    .status(Status::Forbidden)
                     .sized_body(None, std::io::Cursor::new(e))
                     .ok()
             }
@@ -80,7 +122,7 @@ pub async fn get_user(
     // Whitelist check
     if let Some(whitelist) = &config.instagram_username_whitelist {
         if !whitelist.contains(&username.to_string()) {
-            return Err(ApiError::Forbidden(format!("Username '{}' not allowed", username)));
+            return Err(ApiError::ScraperError(ScraperError::UnauthorizedAccess(format!("Username '{}' not allowed", username))));
         }
     }
     
@@ -134,7 +176,7 @@ pub async fn get_posts(
     // Whitelist check
     if let Some(whitelist) = &config.instagram_username_whitelist {
         if !whitelist.contains(&username.to_string()) {
-            return Err(ApiError::Forbidden(format!("Username '{}' not allowed", username)));
+            return Err(ApiError::ScraperError(ScraperError::UnauthorizedAccess(format!("Username '{}' not allowed", username))));
         }
     }
     
@@ -191,7 +233,7 @@ pub async fn get_reels(
     // Whitelist check
     if let Some(whitelist) = &config.instagram_username_whitelist {
         if !whitelist.contains(&username.to_string()) {
-            return Err(ApiError::Forbidden(format!("Username '{}' not allowed", username)));
+            return Err(ApiError::ScraperError(ScraperError::UnauthorizedAccess(format!("Username '{}' not allowed", username))));
         }
     }
     

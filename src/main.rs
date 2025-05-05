@@ -5,12 +5,14 @@ mod api;
 mod cache;
 mod config;
 mod models;
+mod proxy;
 mod scrapers;
 
 use std::env;
 
 use cache::InstagramCache;
 use config::AppConfig;
+use proxy::ProxyManager;
 use dotenv::dotenv;
 use env_logger::Env;
 use log::info;
@@ -41,6 +43,11 @@ async fn rocket() -> _ {
     if let Ok(cookies) = env::var("INSTAGRAM_COOKIES") {
         figment = figment.merge(("instagram_cookies", cookies));
     }
+    
+    // Merge proxies if available from environment
+    if let Ok(proxies) = env::var("PROXIES") {
+        figment = figment.merge(("proxies", proxies.split(',').map(|s| s.trim().to_string()).collect::<Vec<String>>()));
+    }
 
     figment = figment.select(Profile::from_env_or("APP_PROFILE", "default"));
 
@@ -51,9 +58,23 @@ async fn rocket() -> _ {
 
     // Initialize logger
     env_logger::init_from_env(Env::default().default_filter_or("info"));
+    
+    // Create proxy manager with 4 hour unavailability period
+    let proxy_manager = ProxyManager::new(config.proxies.clone(), 4);
+    
+    // Log proxy information
+    if let Some(_proxies) = &config.proxies {
+        let (available, total) = proxy_manager.get_proxy_count();
+        info!(
+            "Proxy rotation enabled with {}/{} available proxies",
+            available, total
+        );
+    } else {
+        info!("Proxy rotation disabled - no proxies configured");
+    }
 
     // Create Instagram scraper
-    let instagram_scraper = InstagramScraper::new(config.clone());
+    let instagram_scraper = InstagramScraper::new(config.clone(), proxy_manager);
 
     // Create Instagram cache
     let instagram_cache = InstagramCache::new(config.instagram_cache_duration);

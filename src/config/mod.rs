@@ -9,5 +9,6 @@ pub struct AppConfig {
     pub user_agent: String,
     pub instagram_username_whitelist: Option<Vec<String>>,
     pub instagram_cookies: Option<String>,
+    pub proxies: Option<Vec<String>>,
 }
  

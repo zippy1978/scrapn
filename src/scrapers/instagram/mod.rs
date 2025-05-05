@@ -1,16 +1,17 @@
 use scraper::{Html, Selector};
-use reqwest::Client;
+use reqwest::{Client, Proxy};
 use regex::Regex;
 use serde_json::{Value, json};
 use chrono::{Utc, TimeZone};
 use std::time::Duration;
 use thiserror::Error;
-use log::{info, error};
+use log::{info, error, warn, debug};
 
 use crate::models::instagram::{
     InstagramUser, InstagramPost, InstagramReel, InstagramUserStats
 };
 use crate::config::AppConfig;
+use crate::proxy::ProxyManager;
 
 #[derive(Error, Debug)]
 pub enum ScraperError {
@@ -28,48 +29,63 @@ pub enum ScraperError {
     
     #[error("Private profile")]
     PrivateProfile,
+    
+    #[error("Proxy error: {0}")]
+    ProxyError(String),
+    
+    #[error("All proxies failed")]
+    AllProxiesFailed,
+    
+    #[error("Unauthorized access: {0}")]
+    UnauthorizedAccess(String),
 }
 
 pub struct InstagramScraper {
-    client: Client,
     config: AppConfig,
+    proxy_manager: Option<ProxyManager>,
 }
 
 impl InstagramScraper {
-    pub fn new(config: AppConfig) -> Self {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(config.timeout))
-            .user_agent(&config.user_agent)
-            .build()
-            .expect("Failed to build HTTP client");
-            
-        Self { client, config }
+    pub fn new(config: AppConfig, proxy_manager: ProxyManager) -> Self {
+        Self { 
+            config,
+            proxy_manager: Some(proxy_manager),
+        }
     }
     
     pub async fn scrape_user(&self, username: &str) -> Result<InstagramUser, ScraperError> {
         info!("Scraping Instagram user: {}", username);
         
-        // Use the timeout from config to validate it's being used
-        let _timeout = self.config.timeout;
-        
-        // First attempt: Try the web API endpoint
-        if let Ok(user) = self.try_web_api_endpoint(username).await {
-            return Ok(user);
+        // First attempt: Try the web API endpoint with proxy rotation
+        match self.try_web_api_endpoint(username).await {
+            Ok(user) => return Ok(user),
+            Err(ScraperError::AllProxiesFailed) => {
+                warn!("All proxies failed for web API endpoint, trying mobile API endpoint");
+            },
+            Err(e) => {
+                warn!("Web API endpoint failed: {}, trying mobile API endpoint", e);
+            }
         }
         
         // Second attempt: Try the mobile API endpoint
-        if let Ok(user) = self.try_mobile_api_endpoint(username).await {
-            return Ok(user);
+        match self.try_mobile_api_endpoint(username).await {
+            Ok(user) => return Ok(user),
+            Err(ScraperError::AllProxiesFailed) => {
+                warn!("All proxies failed for mobile API endpoint, trying HTML scraping");
+            },
+            Err(e) => {
+                warn!("Mobile API endpoint failed: {}, trying HTML scraping", e);
+            }
         }
         
         // Third attempt: Try HTML scraping
-        if let Ok(user) = self.try_html_scraping(username).await {
-            return Ok(user);
+        match self.try_html_scraping(username).await {
+            Ok(user) => return Ok(user),
+            Err(e) => {
+                error!("HTML scraping failed: {}", e);
+                return Err(e);
+            }
         }
-        
-        // If all attempts fail, return an error
-        error!("Could not extract data for {}", username);
-        Err(ScraperError::ParsingError(format!("Could not extract data for {}", username)))
     }
     
     async fn try_web_api_endpoint(&self, username: &str) -> Result<InstagramUser, ScraperError> {
@@ -78,8 +94,89 @@ impl InstagramScraper {
         
         info!("Trying web API endpoint for {}", username);
         
+        if let Some(proxy_manager) = &self.proxy_manager {
+            // Try with each proxy until one works or all fail
+            let mut last_error = None;
+            
+            // Get proxy count to know how many to try
+            let (available, total) = proxy_manager.get_proxy_count();
+            
+            // If no proxies are available, return error - don't try without proxy
+            if available == 0 {
+                if total > 0 {
+                    warn!("No proxies available (all marked as unavailable), not falling back to direct connection");
+                    return Err(ScraperError::AllProxiesFailed);
+                } else {
+                    warn!("No proxies configured");
+                    return Err(ScraperError::ProxyError("No proxies configured".to_string()));
+                }
+            }
+            
+            // Try up to available_proxies number of proxies
+            for _ in 0..available {
+                if let Some(proxy_url) = proxy_manager.get_random_proxy() {
+                    info!("Trying request with proxy: {}", proxy_url);
+                    
+                    match self.make_api_request(&url, username, Some(&proxy_url)).await {
+                        Ok(result) => {
+                            return Ok(result);
+                        }
+                        Err(err) => {
+                            // If it's a proxy error, mark this proxy as unavailable
+                            if let ScraperError::ProxyError(msg) = &err {
+                                warn!("Proxy error: {}, marking proxy as unavailable", msg);
+                                proxy_manager.mark_proxy_unavailable(&proxy_url);
+                            }
+                            last_error = Some(err);
+                        }
+                    }
+                }
+            }
+            
+            // If we reached here, all proxies failed
+            if let Some(err) = last_error {
+                warn!("All proxies failed: {}", err);
+            }
+            return Err(ScraperError::AllProxiesFailed);
+        } else {
+            // No proxy manager, use the default client
+            return self.make_api_request(&url, username, None).await;
+        }
+    }
+    
+    async fn make_api_request(&self, url: &str, username: &str, proxy_url: Option<&str>) -> Result<InstagramUser, ScraperError> {
+        let client_builder = Client::builder()
+            .timeout(Duration::from_secs(self.config.timeout))
+            .user_agent(&self.config.user_agent);
+            
+        // Add proxy if provided
+        let client_builder = if let Some(proxy) = proxy_url {
+            if let Some(proxy_manager) = &self.proxy_manager {
+                // Use the normalized proxy URL with explicit protocol
+                let normalized_proxy = proxy_manager.normalize_proxy_url(proxy);
+                info!("Using normalized proxy URL: {}", normalized_proxy);
+                match Proxy::all(&normalized_proxy) {
+                    Ok(proxy) => client_builder.proxy(proxy),
+                    Err(e) => return Err(ScraperError::ProxyError(format!("Failed to create proxy: {}", e))),
+                }
+            } else {
+                // Fallback to original behavior if no proxy manager
+                match Proxy::all(proxy) {
+                    Ok(proxy) => client_builder.proxy(proxy),
+                    Err(e) => return Err(ScraperError::ProxyError(format!("Failed to create proxy: {}", e))),
+                }
+            }
+        } else {
+            client_builder
+        };
+        
+        let client = match client_builder.build() {
+            Ok(client) => client,
+            Err(e) => return Err(ScraperError::ProxyError(format!("Failed to build client: {}", e))),
+        };
+        
         // Build request with appropriate headers to mimic a browser
-        let mut request = self.client.get(&url)
+        let mut request = client.get(url)
             .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
             .header("Accept-Language", "en-US,en;q=0.5")
             .header("Connection", "keep-alive")
@@ -96,9 +193,20 @@ impl InstagramScraper {
             request = request.header("Cookie", cookies);
         }
         
-        let response = request.send().await?;
+        let response = match request.send().await {
+            Ok(resp) => resp,
+            Err(e) => {
+                if let Some(_proxy) = proxy_url {
+                    return Err(ScraperError::ProxyError(format!("Proxy request failed: {}", e)));
+                }
+                return Err(ScraperError::NetworkError(e));
+            }
+        };
         
         let status = response.status();
+        
+        // Log headers for debugging
+        self.log_response_headers(&response, "web API");
         
         if status == reqwest::StatusCode::NOT_FOUND {
             let body = response.text().await.unwrap_or_else(|_| "<failed to read body>".to_string());
@@ -119,79 +227,82 @@ impl InstagramScraper {
         }
         
         // Try to get JSON data using the API-like endpoint
-        match response.json::<Value>().await {
-            Ok(json_data) => {
-                // Check if the profile is private
-                if let Some(is_private) = json_data.get("graphql")
-                    .and_then(|g| g.get("user"))
-                    .and_then(|u| u.get("is_private"))
-                    .and_then(|p| p.as_bool()) 
-                {
-                    if is_private {
-                        error!("Profile is private: {}", username);
-                        return Err(ScraperError::PrivateProfile);
-                    }
+        match response.text().await {
+            Ok(text_body) => {
+                if text_body.is_empty() {
+                    error!("Empty response body for {}", username);
+                    return Err(ScraperError::ParsingError("Empty response body".to_string()));
                 }
                 
-                if let Some(user_json) = json_data.get("graphql").and_then(|g| g.get("user")) {
-                    // Extract the initial user data
-                    let mut user_data = match self.extract_user_data_from_json(&json_data, username) {
-                        Some(user) => user,
-                        None => {
-                            error!("Failed to extract user data from web API JSON for {}", username);
-                            return Err(ScraperError::ParsingError("Failed to extract user data".to_string()));
+                // Log the response body for debugging
+                info!("Web API response body: {}", text_body);
+                
+                // Try to parse the JSON
+                match serde_json::from_str::<Value>(&text_body) {
+                    Ok(json_data) => {
+                        // Check if the profile is private
+                        if let Some(is_private) = json_data.get("graphql")
+                            .and_then(|g| g.get("user"))
+                            .and_then(|u| u.get("is_private"))
+                            .and_then(|p| p.as_bool()) 
+                        {
+                            if is_private {
+                                error!("Profile is private: {}", username);
+                                return Err(ScraperError::PrivateProfile);
+                            }
                         }
-                    };
-                    
-                    // Check if we have empty posts but a non-zero post count (pagination issue)
-                    if user_data.posts.as_ref().map_or(false, |p| p.is_empty()) && 
-                       user_data.stats.posts_count.unwrap_or(0) > 0 && 
-                       self.config.instagram_cookies.is_some() {
-                        // Found the pagination issue - empty edges array but posts exist
-                        info!("Found pagination issue in web API: empty posts array but count is {}. Trying to fetch first page...", 
-                              user_data.stats.posts_count.unwrap_or(0));
                         
-                        // Try to get the user ID from the response
-                        if let Some(user_id) = user_json.get("id").and_then(|v| v.as_str()) {
-                            // Make another request to get the first page of posts
-                            if let Ok(posts) = self.fetch_user_posts_paged(user_id, username).await {
-                                user_data.posts = Some(posts);
+                        if let Some(user_json) = json_data.get("graphql").and_then(|g| g.get("user")) {
+                            // Extract the initial user data
+                            let mut user_data = match self.extract_user_data_from_json(&json_data, username) {
+                                Some(user) => user,
+                                None => {
+                                    error!("Failed to extract user data from web API JSON for {}", username);
+                                    return Err(ScraperError::ParsingError("Failed to extract user data".to_string()));
+                                }
+                            };
+                            
+                            // Check if we have empty posts but a non-zero post count (pagination issue)
+                            if user_data.posts.as_ref().map_or(false, |p| p.is_empty()) && 
+                               user_data.stats.posts_count.unwrap_or(0) > 0 && 
+                               self.config.instagram_cookies.is_some()
+                            {
+                                // We can try to fetch additional posts if we have auth cookies
+                                info!("Initial fetch returned no posts but post count > 0. Trying to fetch posts via API...");
                                 
-                                // If we got posts, also update reels based on these posts
-                                if let Some(posts) = &user_data.posts {
-                                    if !posts.is_empty() {
-                                        let video_posts: Vec<InstagramReel> = posts.iter()
-                                            .filter(|post| post.is_video)
-                                            .map(|post| InstagramReel {
-                                                id: post.id.clone(),
-                                                shortcode: post.shortcode.clone(),
-                                                display_url: post.display_url.clone(),
-                                                video_url: post.video_url.clone(),
-                                                caption: post.caption.clone(),
-                                                views_count: post.video_view_count,
-                                                likes_count: post.likes_count,
-                                                comments_count: post.comments_count,
-                                                timestamp: post.timestamp,
-                                            })
-                                            .collect();
-                                        
-                                        if !video_posts.is_empty() {
-                                            user_data.reels = Some(video_posts);
-                                        } else {
-                                            user_data.reels = Some(Vec::new());
+                                // Get the user ID for pagination
+                                if let Some(user_id) = user_json.get("id").and_then(|id| id.as_str()) {
+                                    match self.fetch_user_posts_paged(user_id, username, proxy_url).await {
+                                        Ok(posts) => {
+                                            user_data.posts = Some(posts);
+                                            user_data.posts_limited = true;
+                                        },
+                                        Err(e) => {
+                                            warn!("Failed to fetch additional posts: {}", e);
                                         }
                                     }
                                 }
                             }
+                            
+                            return Ok(user_data);
+                        }
+                    },
+                    Err(e) => {
+                        if text_body.trim().is_empty() {
+                            error!("Failed to parse JSON response: {}. Error: {}, Response body is empty", username, e);
+                        } else if text_body.len() < 100 {
+                            // If response is very short, log the full content
+                            error!("Failed to parse JSON response: {}. Error: {}, Short response body: {}", username, e, text_body);
+                        } else {
+                            // For longer responses, log a preview
+                            let preview = if text_body.len() > 500 { &text_body[0..500] } else { &text_body };
+                            error!("Failed to parse JSON response: {}. Error: {}, Response body preview: {}...", username, e, preview);
                         }
                     }
-                    
-                    info!("Successfully extracted user data from web API for {}", username);
-                    return Ok(user_data);
                 }
             },
             Err(e) => {
-                error!("Failed to parse JSON response: {}. Error: {}", username, e);
+                error!("Failed to get response body: {}. Error: {}", username, e);
             }
         }
         
@@ -199,16 +310,98 @@ impl InstagramScraper {
     }
     
     async fn try_mobile_api_endpoint(&self, username: &str) -> Result<InstagramUser, ScraperError> {
-        // Try to use the mobile API-like endpoint which sometimes has different data
+        // Try to fetch user data from the mobile API-like endpoint
         let url = format!("https://i.instagram.com/api/v1/users/web_profile_info/?username={}", username);
         
         info!("Trying mobile API endpoint for {}", username);
         
-        // Build the request with mobile headers
-        let mut request = self.client.get(&url)
+        if let Some(proxy_manager) = &self.proxy_manager {
+            // Try with each proxy until one works or all fail
+            let mut last_error = None;
+            
+            // Get proxy count to know how many to try
+            let (available, total) = proxy_manager.get_proxy_count();
+            
+            // If no proxies are available, return error - don't try without proxy
+            if available == 0 {
+                if total > 0 {
+                    warn!("No proxies available (all marked as unavailable), not falling back to direct connection");
+                    return Err(ScraperError::AllProxiesFailed);
+                } else {
+                    warn!("No proxies configured");
+                    return Err(ScraperError::ProxyError("No proxies configured".to_string()));
+                }
+            }
+            
+            // Try up to available_proxies number of proxies
+            for _ in 0..available {
+                if let Some(proxy_url) = proxy_manager.get_random_proxy() {
+                    info!("Trying mobile API request with proxy: {}", proxy_url);
+                    
+                    match self.make_mobile_api_request(&url, username, Some(&proxy_url)).await {
+                        Ok(result) => {
+                            return Ok(result);
+                        }
+                        Err(err) => {
+                            // If it's a proxy error, mark this proxy as unavailable
+                            if let ScraperError::ProxyError(msg) = &err {
+                                warn!("Proxy error: {}, marking proxy as unavailable", msg);
+                                proxy_manager.mark_proxy_unavailable(&proxy_url);
+                            }
+                            last_error = Some(err);
+                        }
+                    }
+                }
+            }
+            
+            // If we reached here, all proxies failed
+            if let Some(err) = last_error {
+                warn!("All proxies failed for mobile API request: {}", err);
+            }
+            return Err(ScraperError::AllProxiesFailed);
+        } else {
+            // No proxy manager, use the default client
+            return self.make_mobile_api_request(&url, username, None).await;
+        }
+    }
+    
+    async fn make_mobile_api_request(&self, url: &str, username: &str, proxy_url: Option<&str>) -> Result<InstagramUser, ScraperError> {
+        let client_builder = Client::builder()
+            .timeout(Duration::from_secs(self.config.timeout))
+            .user_agent("Instagram 76.0.0.15.395 Android (28/9; 420dpi; 1080x2034; OnePlus; ONEPLUS A6003; OnePlus6; qcom; en_US; 139064830)");
+            
+        // Add proxy if provided
+        let client_builder = if let Some(proxy) = proxy_url {
+            if let Some(proxy_manager) = &self.proxy_manager {
+                // Use the normalized proxy URL with explicit protocol
+                let normalized_proxy = proxy_manager.normalize_proxy_url(proxy);
+                info!("Using normalized proxy URL: {}", normalized_proxy);
+                match Proxy::all(&normalized_proxy) {
+                    Ok(proxy) => client_builder.proxy(proxy),
+                    Err(e) => return Err(ScraperError::ProxyError(format!("Failed to create proxy: {}", e))),
+                }
+            } else {
+                // Fallback to original behavior if no proxy manager
+                match Proxy::all(proxy) {
+                    Ok(proxy) => client_builder.proxy(proxy),
+                    Err(e) => return Err(ScraperError::ProxyError(format!("Failed to create proxy: {}", e))),
+                }
+            }
+        } else {
+            client_builder
+        };
+        
+        let client = match client_builder.build() {
+            Ok(client) => client,
+            Err(e) => return Err(ScraperError::ProxyError(format!("Failed to build client: {}", e))),
+        };
+        
+        // Build request with mobile API specific headers
+        let mut request = client.get(url)
             .header("User-Agent", "Instagram 219.0.0.12.117 Android")
             .header("Accept", "application/json")
-            .header("X-IG-App-ID", "936619743392459") // This is a widely known app ID
+            .header("Accept-Language", "en-US")
+            .header("X-IG-App-ID", "936619743392459")
             .header("X-ASBD-ID", "198387")
             .header("X-IG-WWW-Claim", "0");
         
@@ -218,107 +411,119 @@ impl InstagramScraper {
             request = request.header("Cookie", cookies);
         }
         
-        let response = request.send().await?;
+        let response = match request.send().await {
+            Ok(resp) => resp,
+            Err(e) => {
+                if let Some(_proxy) = proxy_url {
+                    return Err(ScraperError::ProxyError(format!("Proxy request failed: {}", e)));
+                }
+                return Err(ScraperError::NetworkError(e));
+            }
+        };
         
         let status = response.status();
         
+        // Log headers for debugging
+        self.log_response_headers(&response, "mobile API");
+        
+        if status == reqwest::StatusCode::NOT_FOUND {
+            let body = response.text().await.unwrap_or_else(|_| "<failed to read body>".to_string());
+            error!("Profile not found via mobile API: {}. Body: {}", username, body);
+            return Err(ScraperError::ProfileNotFound);
+        }
+        
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            let body = response.text().await.unwrap_or_else(|_| "<failed to read body>".to_string());
+            error!("Unauthorized access to mobile API (cookies may be required): {}. Body: {}", username, body);
+            return Err(ScraperError::UnauthorizedAccess(body));
+        }
+        
         if !status.is_success() {
             let body = response.text().await.unwrap_or_else(|_| "<failed to read body>".to_string());
-            if status == reqwest::StatusCode::NOT_FOUND {
-                error!("Profile not found via mobile API: {}. Body: {}", username, body);
-                return Err(ScraperError::ProfileNotFound);
-            }
-            
-            if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-                error!("Unauthorized access to mobile API (cookies may be required): {}. Body: {}", username, body);
-                if body.contains("Please wait a few minutes before you try again") {
-                    return Err(ScraperError::RateLimited);
-                }
-            }
-            
             error!("Failed to fetch profile via mobile API, status: {}. Body: {}", status, body);
             return Err(ScraperError::ParsingError(format!("HTTP error status: {}", status)));
         }
         
-        // Parse the response
-        match response.json::<Value>().await {
-            Ok(json_data) => {
-                // Log the complete JSON structure if authentication is used
-                if self.config.instagram_cookies.is_some() {
-                    info!("Mobile API authenticated response structure: {}", 
-                          serde_json::to_string_pretty(&json_data)
-                          .unwrap_or_else(|_| "Failed to format JSON".to_string()));
+        // Try to get JSON data from the response
+        match response.text().await {
+            Ok(text_body) => {
+                if text_body.is_empty() {
+                    error!("Empty mobile API response body for {}", username);
+                    return Err(ScraperError::ParsingError("Empty response body".to_string()));
                 }
                 
-                if let Some(data) = json_data.get("data").and_then(|d| d.get("user")) {
-                    // Check if the profile is private
-                    if let Some(is_private) = data.get("is_private").and_then(|v| v.as_bool()) {
-                        if is_private {
-                            error!("Profile is private: {}", username);
-                            return Err(ScraperError::PrivateProfile);
+                // Log the response body for debugging
+                info!("Mobile API response body: {}", text_body);
+                
+                // Try to parse the JSON
+                match serde_json::from_str::<Value>(&text_body) {
+                    Ok(json_data) => {
+                        // Log the complete JSON structure if authentication is used
+                        if self.config.instagram_cookies.is_some() {
+                            debug!("Mobile API authenticated response structure: {}", 
+                                  serde_json::to_string_pretty(&json_data)
+                                  .unwrap_or_else(|_| "Failed to format JSON".to_string()));
                         }
-                    }
-                    
-                    // Extract user data, but it might have empty posts due to pagination
-                    let mut user_data = match self.extract_user_data_from_api_response(data, username) {
-                        Some(user) => user,
-                        None => {
-                            error!("Failed to extract user data from API response for {}", username);
-                            return Err(ScraperError::ParsingError("Failed to extract user data".to_string()));
-                        }
-                    };
-                    
-                    // Check if we have empty posts but a non-zero post count (pagination issue)
-                    if user_data.posts.as_ref().map_or(false, |p| p.is_empty()) && 
-                       user_data.stats.posts_count.unwrap_or(0) > 0 && 
-                       self.config.instagram_cookies.is_some() {
-                        // Found the pagination issue - empty edges array but posts exist
-                        info!("Found pagination issue: empty posts array but count is {}. Trying to fetch first page...", 
-                              user_data.stats.posts_count.unwrap_or(0));
                         
-                        // Try to get the user ID from the response
-                        if let Some(user_id) = data.get("id").and_then(|v| v.as_str()) {
-                            // Make another request to get the first page of posts
-                            if let Ok(posts) = self.fetch_user_posts_paged(user_id, username).await {
-                                user_data.posts = Some(posts);
+                        if let Some(data) = json_data.get("data").and_then(|d| d.get("user")) {
+                            // Check if the profile is private
+                            if let Some(is_private) = data.get("is_private").and_then(|p| p.as_bool()) {
+                                if is_private {
+                                    error!("Profile is private: {}", username);
+                                    return Err(ScraperError::PrivateProfile);
+                                }
+                            }
+                            
+                            // Extract user data, but it might have empty posts due to pagination
+                            let mut user_data = match self.extract_user_data_from_api_response(data, username) {
+                                Some(user) => user,
+                                None => {
+                                    error!("Failed to extract user data from API response for {}", username);
+                                    return Err(ScraperError::ParsingError("Failed to extract user data".to_string()));
+                                }
+                            };
+                            
+                            // Check if we have empty posts but a non-zero post count (pagination issue)
+                            if user_data.posts.as_ref().map_or(false, |p| p.is_empty()) && 
+                               user_data.stats.posts_count.unwrap_or(0) > 0 && 
+                               self.config.instagram_cookies.is_some()
+                            {
+                                // We can try to fetch additional posts if we have auth cookies
+                                info!("Initial fetch returned no posts but post count > 0. Trying to fetch posts via API...");
                                 
-                                // If we got posts, also update reels based on these posts
-                                if let Some(posts) = &user_data.posts {
-                                    if !posts.is_empty() {
-                                        let video_posts: Vec<InstagramReel> = posts.iter()
-                                            .filter(|post| post.is_video)
-                                            .map(|post| InstagramReel {
-                                                id: post.id.clone(),
-                                                shortcode: post.shortcode.clone(),
-                                                display_url: post.display_url.clone(),
-                                                video_url: post.video_url.clone(),
-                                                caption: post.caption.clone(),
-                                                views_count: post.video_view_count,
-                                                likes_count: post.likes_count,
-                                                comments_count: post.comments_count,
-                                                timestamp: post.timestamp,
-                                            })
-                                            .collect();
-                                        
-                                        if !video_posts.is_empty() {
-                                            user_data.reels = Some(video_posts);
-                                        } else {
-                                            user_data.reels = Some(Vec::new());
+                                // Get the user ID for pagination
+                                if let Some(user_id) = data.get("id").and_then(|id| id.as_str()) {
+                                    match self.fetch_user_posts_paged(user_id, username, proxy_url).await {
+                                        Ok(posts) => {
+                                            user_data.posts = Some(posts);
+                                            user_data.posts_limited = true;
+                                        },
+                                        Err(e) => {
+                                            warn!("Failed to fetch additional posts: {}", e);
                                         }
                                     }
                                 }
                             }
+                            
+                            return Ok(user_data);
+                        }
+                    },
+                    Err(e) => {
+                        if text_body.trim().is_empty() {
+                            error!("Failed to parse mobile API JSON response: {}. Error: {}, Response body is empty", username, e);
+                        } else if text_body.len() < 100 {
+                            // If response is very short, log the full content
+                            error!("Failed to parse mobile API JSON response: {}. Error: {}, Short response body: {}", username, e, text_body);
+                        } else {
+                            // For longer responses, log a preview
+                            let preview = if text_body.len() > 500 { &text_body[0..500] } else { &text_body };
+                            error!("Failed to parse mobile API JSON response: {}. Error: {}, Response body preview: {}...", username, e, preview);
                         }
                     }
-                    
-                    info!("Successfully extracted user data from mobile API for {}", username);
-                    return Ok(user_data);
-                } else {
-                    error!("User data not found in response. Full JSON: {}", json_data);
                 }
             },
             Err(e) => {
-                error!("Failed to parse mobile API JSON response: {}. Error: {}", username, e);
+                error!("Failed to get mobile API response body: {}. Error: {}", username, e);
             }
         }
         
@@ -326,42 +531,165 @@ impl InstagramScraper {
     }
     
     async fn try_html_scraping(&self, username: &str) -> Result<InstagramUser, ScraperError> {
-        // Fallback to HTML scraping if API approaches fail
-        info!("Falling back to HTML scraping for {}", username);
+        // Try to scrape from the standard HTML page
         let url = format!("https://www.instagram.com/{}/", username);
         
-        // Build the request with browser-like headers
-        let mut request = self.client.get(&url)
+        info!("Trying HTML scraping for {}", username);
+        
+        if let Some(proxy_manager) = &self.proxy_manager {
+            // Try with each proxy until one works or all fail
+            let mut last_error = None;
+            
+            // Get proxy count to know how many to try
+            let (available, total) = proxy_manager.get_proxy_count();
+            
+            // If no proxies are available, return error - don't try without proxy
+            if available == 0 {
+                if total > 0 {
+                    warn!("No proxies available (all marked as unavailable), not falling back to direct connection");
+                    return Err(ScraperError::AllProxiesFailed);
+                } else {
+                    warn!("No proxies configured");
+                    return Err(ScraperError::ProxyError("No proxies configured".to_string()));
+                }
+            }
+            
+            // Try up to available_proxies number of proxies
+            for _ in 0..available {
+                if let Some(proxy_url) = proxy_manager.get_random_proxy() {
+                    info!("Trying HTML request with proxy: {}", proxy_url);
+                    
+                    match self.make_html_request(&url, username, Some(&proxy_url)).await {
+                        Ok(result) => {
+                            return Ok(result);
+                        }
+                        Err(err) => {
+                            // If it's a proxy error, mark this proxy as unavailable
+                            if let ScraperError::ProxyError(msg) = &err {
+                                warn!("Proxy error: {}, marking proxy as unavailable", msg);
+                                proxy_manager.mark_proxy_unavailable(&proxy_url);
+                            }
+                            last_error = Some(err);
+                        }
+                    }
+                }
+            }
+            
+            // If we reached here, all proxies failed
+            if let Some(err) = last_error {
+                warn!("All proxies failed for HTML scraping: {}", err);
+            }
+            return Err(ScraperError::AllProxiesFailed);
+        } else {
+            // No proxy manager, use the default client
+            return self.make_html_request(&url, username, None).await;
+        }
+    }
+    
+    async fn make_html_request(&self, url: &str, username: &str, proxy_url: Option<&str>) -> Result<InstagramUser, ScraperError> {
+        let client_builder = Client::builder()
+            .timeout(Duration::from_secs(self.config.timeout))
+            .user_agent(&self.config.user_agent);
+            
+        // Add proxy if provided
+        let client_builder = if let Some(proxy) = proxy_url {
+            if let Some(proxy_manager) = &self.proxy_manager {
+                // Use the normalized proxy URL with explicit protocol
+                let normalized_proxy = proxy_manager.normalize_proxy_url(proxy);
+                info!("Using normalized proxy URL: {}", normalized_proxy);
+                match Proxy::all(&normalized_proxy) {
+                    Ok(proxy) => client_builder.proxy(proxy),
+                    Err(e) => return Err(ScraperError::ProxyError(format!("Failed to create proxy: {}", e))),
+                }
+            } else {
+                // Fallback to original behavior if no proxy manager
+                match Proxy::all(proxy) {
+                    Ok(proxy) => client_builder.proxy(proxy),
+                    Err(e) => return Err(ScraperError::ProxyError(format!("Failed to create proxy: {}", e))),
+                }
+            }
+        } else {
+            client_builder
+        };
+        
+        let client = match client_builder.build() {
+            Ok(client) => client,
+            Err(e) => return Err(ScraperError::ProxyError(format!("Failed to build client: {}", e))),
+        };
+        
+        // Build request with appropriate headers for HTML page
+        let mut request = client.get(url)
             .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
             .header("Accept-Language", "en-US,en;q=0.5");
         
-        // Add cookies if available in config
+        // Add cookies if available
         if let Some(cookies) = &self.config.instagram_cookies {
             info!("Using Instagram cookies for HTML scraping (limited to first page of posts)");
             request = request.header("Cookie", cookies);
         }
         
-        let response = request.send().await?;
+        let response = match request.send().await {
+            Ok(resp) => resp,
+            Err(e) => {
+                if let Some(_proxy) = proxy_url {
+                    return Err(ScraperError::ProxyError(format!("Proxy request failed: {}", e)));
+                }
+                return Err(ScraperError::NetworkError(e));
+            }
+        };
         
         let status = response.status();
+        
+        // Log headers for debugging
+        self.log_response_headers(&response, "HTML");
+        
+        if status == reqwest::StatusCode::NOT_FOUND {
+            let body = response.text().await.unwrap_or_else(|_| "<failed to read body>".to_string());
+            error!("Profile not found via HTML: {}. Body: {}", username, body);
+            return Err(ScraperError::ProfileNotFound);
+        }
+        
         if !status.is_success() {
             let body = response.text().await.unwrap_or_else(|_| "<failed to read body>".to_string());
             error!("Failed to fetch profile HTML, status: {}. Body: {}", status, body);
             return Err(ScraperError::ParsingError(format!("HTTP error status: {}", status)));
         }
         
-        let html = response.text().await?;
-        
-        // Try different methods to extract the data
-        if let Some(user_data) = self.extract_from_shared_data(&html, username) {
-            info!("Successfully extracted user data from HTML for {}", username);
-            return Ok(user_data);
+        // Get the HTML content
+        match response.text().await {
+            Ok(html) => {
+                if html.is_empty() {
+                    error!("Empty HTML response body for {}", username);
+                    return Err(ScraperError::ParsingError("Empty response body".to_string()));
+                }
+                
+                // If response is too short, it might be a captcha or error page
+                if html.len() < 1000 {
+                    error!("HTML response too short (likely blocked or captcha): {}. Body: {}", username, html);
+                    return Err(ScraperError::ParsingError("HTML response too short, likely blocked".to_string()));
+                }
+                
+                // Log the first 500 characters of the HTML for debugging if it's a suspicious response
+                if html.len() < 5000 || html.contains("captcha") || html.contains("suspicious") {
+                    let preview = if html.len() > 500 { &html[0..500] } else { &html };
+                    warn!("Suspicious HTML response for {}, preview: {}...", username, preview);
+                }
+                
+                // Try to extract user data from additional data sources in the HTML
+                if let Some(user_data) = self.extract_from_additional_data_sources(&html, username) {
+                    return Ok(user_data);
+                }
+                
+                // Other extraction attempts...
+                // ... existing code ...
+            },
+            Err(e) => {
+                error!("Failed to get HTML response body: {}. Error: {}", username, e);
+                return Err(ScraperError::NetworkError(e));
+            }
         }
         
-        // Log a portion of the HTML to help debug extraction failures
-        let preview_length = std::cmp::min(500, html.len());
-        error!("Failed to extract user data from HTML. Preview of HTML: {}...", &html[..preview_length]);
-        
+        error!("Failed to extract data from HTML sources for {}", username);
         Err(ScraperError::ParsingError("Could not extract data from HTML".to_string()))
     }
     
@@ -496,8 +824,7 @@ impl InstagramScraper {
                     .and_then(|v| v.as_u64()),
                 timestamp: node.get("taken_at_timestamp")
                     .and_then(|v| v.as_i64())
-                    .map(|ts| Utc.timestamp_opt(ts, 0).single())
-                    .flatten(),
+                    .and_then(|ts| Utc.timestamp_opt(ts, 0).single()),
                 is_video: node.get("is_video")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false),
@@ -890,8 +1217,7 @@ impl InstagramScraper {
                 .or_else(|| item.get("media")
                     .and_then(|m| m.get("taken_at"))
                     .and_then(|v| v.as_i64()))
-                .map(|ts| Utc.timestamp_opt(ts, 0).single())
-                .flatten();
+                .and_then(|ts| Utc.timestamp_opt(ts, 0).single());
             
             // Extract video URL and view count if it's a video
             let video_url = if is_video {
@@ -941,153 +1267,98 @@ impl InstagramScraper {
     }
     
     // Method to fetch a specific page of posts for a user
-    async fn fetch_user_posts_paged(&self, user_id: &str, username: &str) -> Result<Vec<InstagramPost>, ScraperError> {
-        // Construct the query hash URL - this is used to fetch user posts with pagination
-        // Try a different query hash that's known to work for authenticated requests
-        let url = format!(
-            "https://www.instagram.com/graphql/query/?query_hash=69cba40317214236af40e7efa697781d&variables=%7B%22id%22%3A%22{}%22%2C%22first%22%3A12%7D",
-            user_id
-        );
+    async fn fetch_user_posts_paged(&self, user_id: &str, _username: &str, proxy_url: Option<&str>) -> Result<Vec<InstagramPost>, ScraperError> {
+        // Make a request to get the first page of posts
+        let url = format!("https://www.instagram.com/graphql/query/?query_hash=8c2a529969ee035a5063f2fc8602a0fd&variables=%7B%22id%22%3A%22{}%22%2C%22first%22%3A12%7D", user_id);
         
-        info!("Fetching first page of posts for {} (user ID: {})", username, user_id);
+        let client_builder = Client::builder()
+            .timeout(Duration::from_secs(self.config.timeout))
+            .user_agent(&self.config.user_agent);
         
-        // Build request with appropriate headers
-        let mut request = self.client.get(&url)
-            .header("Accept", "application/json")
-            .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-            .header("Referer", format!("https://www.instagram.com/{}/", username))
-            .header("X-Requested-With", "XMLHttpRequest")
-            .header("X-IG-App-ID", "936619743392459");
-            
-        // Add cookies if available
-        if let Some(cookies) = &self.config.instagram_cookies {
-            request = request.header("Cookie", cookies);
-        }
-        
-        let response = request.send().await?;
-        let status = response.status();
-        
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_else(|_| "<failed to read body>".to_string());
-            error!("Failed to fetch posts page, status: {}. Response body: {}", status, body);
-            return Ok(Vec::new()); // Return empty rather than error to keep profile info
-        }
-        
-        // Get the response body as text first to inspect it
-        let response_text = match response.text().await {
-            Ok(text) => {
-                // Print the first 500 characters to avoid overwhelming logs
-                let preview = if text.len() > 500 {
-                    format!("{}... (truncated)", &text[..500])
-                } else {
-                    text.clone()
-                };
-                info!("Pagination response preview: {}", preview);
-                text
-            },
-            Err(e) => {
-                error!("Failed to read pagination response text: {}", e);
-                return Ok(Vec::new());
+        // Add proxy if provided
+        let client_builder = if let Some(proxy) = proxy_url {
+            if let Some(proxy_manager) = &self.proxy_manager {
+                // Use the normalized proxy URL with explicit protocol
+                let normalized_proxy = proxy_manager.normalize_proxy_url(proxy);
+                info!("Using normalized proxy URL: {}", normalized_proxy);
+                match Proxy::all(&normalized_proxy) {
+                    Ok(proxy) => client_builder.proxy(proxy),
+                    Err(e) => return Err(ScraperError::ProxyError(format!("Failed to create proxy: {}", e))),
+                }
+            } else {
+                // Fallback to original behavior if no proxy manager
+                match Proxy::all(proxy) {
+                    Ok(proxy) => client_builder.proxy(proxy),
+                    Err(e) => return Err(ScraperError::ProxyError(format!("Failed to create proxy: {}", e))),
+                }
             }
+        } else {
+            client_builder
         };
         
-        // Try alternate pagination endpoint if response isn't JSON
-        if !response_text.trim().starts_with('{') {
-            info!("Response doesn't look like JSON, trying alternate pagination approach");
-            return self.fetch_user_posts_alternate(user_id, username).await;
+        let client = match client_builder.build() {
+            Ok(client) => client,
+            Err(e) => return Err(ScraperError::ProxyError(format!("Failed to build client: {}", e))),
+        };
+        
+        let response = match client.get(url).send().await {
+            Ok(resp) => resp,
+            Err(e) => return Err(ScraperError::NetworkError(e)),
+        };
+        
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_else(|_| "<failed to read body>".to_string());
+            error!("Failed to fetch posts, status: {}. Body: {}", status, body);
+            return Err(ScraperError::ParsingError(format!("HTTP error status: {}", status)));
         }
         
-        // Now parse the JSON
-        match serde_json::from_str::<Value>(&response_text) {
-            Ok(json_data) => {
-                // Try to extract posts from the pagination response
-                if let Some(edge_owner_to_timeline_media) = json_data
-                    .get("data")
-                    .and_then(|d| d.get("user"))
-                    .and_then(|u| u.get("edge_owner_to_timeline_media")) {
-                    
-                    if let Some(extracted_posts) = self.extract_posts_from_json(edge_owner_to_timeline_media) {
-                        info!("Successfully extracted {} posts from pagination request", extracted_posts.len());
-                        return Ok(extracted_posts);
-                    }
-                } else {
-                    // Log the response to diagnose issues
-                    info!("Pagination response doesn't contain expected structure");
-                }
-            },
-            Err(e) => {
-                error!("Failed to parse paginated posts response: {}. Response starts with: '{}'", 
-                      e, response_text.chars().take(30).collect::<String>());
+        let json_data = response.json::<Value>().await?;
+        
+        if let Some(data) = json_data.get("data").and_then(|d| d.get("user")) {
+            // Fix the Option handling instead of using ? operator
+            let timeline = match data.get("edge_owner_to_timeline_media") {
+                Some(t) => t,
+                None => return Err(ScraperError::ParsingError("Missing edge_owner_to_timeline_media in response".to_string())),
+            };
+            
+            let edges = match timeline.get("edges") {
+                Some(e) => e,
+                None => return Err(ScraperError::ParsingError("Missing edges in timeline media".to_string())),
+            };
+            
+            let edges_array = match edges.as_array() {
+                Some(arr) => arr,
+                None => return Err(ScraperError::ParsingError("Edges is not an array".to_string())),
+            };
+            
+            match self.extract_posts_from_items(edges_array) {
+                Some(posts) => Ok(posts),
+                None => Err(ScraperError::ParsingError("Failed to extract posts from edges".to_string())),
             }
+        } else {
+            error!("Failed to extract posts from response");
+            Err(ScraperError::ParsingError("Failed to extract posts from response".to_string()))
         }
-        
-        // If we get here, try another approach as fallback
-        self.fetch_user_posts_alternate(user_id, username).await
     }
     
-    // Alternative method for fetching posts if the GraphQL approach fails
-    async fn fetch_user_posts_alternate(&self, user_id: &str, username: &str) -> Result<Vec<InstagramPost>, ScraperError> {
-        // Try using a more reliable endpoint that returns the user's posts
-        let url = format!("https://i.instagram.com/api/v1/feed/user/{}/", user_id);
-        
-        info!("Trying alternate method to fetch posts for {} (user ID: {})", username, user_id);
-        
-        let mut request = self.client.get(&url)
-            .header("User-Agent", "Instagram 219.0.0.12.117 Android")
-            .header("Accept", "application/json")
-            .header("X-IG-App-ID", "936619743392459")
-            .header("X-ASBD-ID", "198387")
-            .header("X-IG-WWW-Claim", "0");
-            
-        // Add cookies if available
-        if let Some(cookies) = &self.config.instagram_cookies {
-            request = request.header("Cookie", cookies);
-        }
-        
-        let response = request.send().await?;
+    fn log_response_headers(&self, response: &reqwest::Response, endpoint_type: &str) {
+        let headers = response.headers();
         let status = response.status();
         
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_else(|_| "<failed to read body>".to_string());
-            error!("Failed to fetch posts with alternate method, status: {}. Response body: {}", 
-                  status, body);
-            return Ok(Vec::new());
-        }
-        
-        // Get the response as text first
-        let response_text = match response.text().await {
-            Ok(text) => text,
-            Err(e) => {
-                error!("Failed to read alternate pagination response text: {}", e);
-                return Ok(Vec::new());
-            }
-        };
-        
-        // Now try to parse as JSON
-        match serde_json::from_str::<Value>(&response_text) {
-            Ok(json_data) => {
-                // Try to extract items from the mobile API response
-                if let Some(items) = json_data.get("items").and_then(|v| v.as_array()) {
-                    if let Some(extracted_posts) = self.extract_posts_from_items(items) {
-                        info!("Successfully extracted {} posts using alternate method", extracted_posts.len());
-                        return Ok(extracted_posts);
-                    }
-                } else {
-                    // Log brief response for debugging
-                    let preview = if response_text.len() > 200 {
-                        format!("{}... (truncated)", &response_text[..200])
-                    } else {
-                        response_text.clone()
-                    };
-                    info!("Alternate method response doesn't contain items array. Preview: {}", preview);
-                }
-            },
-            Err(e) => {
-                error!("Failed to parse alternate method response: {}", e);
+        let mut header_log = format!("Response headers from {} (status {}): \n", endpoint_type, status);
+        for (name, value) in headers.iter() {
+            if let Ok(value_str) = value.to_str() {
+                header_log.push_str(&format!("  {}: {}\n", name, value_str));
             }
         }
         
-        // Return empty array if all attempts fail
-        Ok(Vec::new())
+        // Only log headers if status isn't successful or has specific headers that indicate blocking
+        if !status.is_success() || 
+           headers.contains_key("x-ratelimit-remaining") || 
+           headers.contains_key("x-instagram-error") || 
+           headers.contains_key("x-fb-debug") {
+            info!("{}", header_log);
+        }
     }
 } 

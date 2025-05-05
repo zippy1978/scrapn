@@ -9,6 +9,7 @@ Scrapn is a REST API built with Rust and Rocket that provides access to Instagra
 - Configurable in-memory caching
 - Support for posts and reels
 - Instagram username whitelist for restricted access
+- Proxy rotation to prevent IP blocking
 
 ## API Endpoints
 
@@ -43,18 +44,40 @@ instagram_cache_duration = 1
 # Scraping timeout in seconds
 timeout = 30
 user_agent = "..."
+
+# Proxy configuration (optional)
+[default.proxy]
+# Comma-separated list of proxy URLs
+proxies = [
+  "http://user:pass@host:port",
+  "socks5://user:pass@host:port"
+]
+# Time in hours to mark a proxy as unavailable after failure
+unavailable_time = 4
 ```
 
 ### Environment Variables
 
 - `INSTAGRAM_USERNAME_WHITELIST` - Optional comma-separated list of Instagram usernames that are allowed to be scraped. If set, only these usernames will be accessible through the API.
 - `INSTAGRAM_COOKIES` - Optional Instagram session cookies for authenticated requests. This helps bypass rate limits and access restricted content.
+- `INSTAGRAM_PROXIES` - Optional comma-separated list of proxy URLs. This helps prevent IP blocking by rotating between multiple proxies.
 
 Example:
 ```
 INSTAGRAM_USERNAME_WHITELIST=username1,username2,username3
 INSTAGRAM_COOKIES=sessionid=YOUR_SESSION_ID; ds_user_id=YOUR_USER_ID; csrftoken=YOUR_CSRF_TOKEN
+INSTAGRAM_PROXIES=http://user:pass@host1:port1,http://user:pass@host2:port2,socks5://user:pass@host3:port3
 ```
+
+#### Supported Proxy Protocols
+
+Scrapn supports the following proxy protocols:
+- HTTP
+- HTTPS
+- SOCKS4
+- SOCKS5
+
+Each proxy URL should include the protocol, authentication (if required), host, and port.
 
 #### Obtaining Instagram Cookies
 
@@ -105,4 +128,4 @@ The server will start on port 8000, accessible at http://localhost:8000.
 
 ## Warning
 
-Web scraping may violate Instagram's Terms of Service. Use responsibly and at your own risk.
+Web scraping may violate Instagram's Terms of Service. Use responsibly and at your own risk. Instagram may block requests from known proxy IPs, so using residential proxies is recommended for better results.

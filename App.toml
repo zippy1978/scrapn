@@ -13,3 +13,9 @@ user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 # Instagram session cookies for authenticated requests (helps bypass rate limits)
 # Better use env INSTAGRAM_COOKIES
 #instagram_cookies = "sessionid=YOUR_SESSION_ID; ds_user_id=YOUR_USER_ID; csrftoken=YOUR_CSRF_TOKEN" 
+# List of proxies to use for scraping (rotated randomly)
+# Format: "protocol://username:password@host:port" or "protocol://host:port"
+# Supported protocols: http, https, socks5
+# Examples: ["http://user:pass@proxy1.example.com:8080", "socks5://proxy2.example.com:1080"]
+# Better use env PROXIES
+#proxies = ["http://proxy1.example.com:8080", "socks5://proxy2.example.com:1080"] 
