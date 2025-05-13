@@ -206,13 +206,62 @@ impl<'r> Responder<'r, 'static> for ImageResponse {
     }
 }
 
-#[get("/image?<url>")]
+#[get("/<username>/image?<url>")]
 pub async fn proxy_image(
+    username: &str,
     url: &str,
     image_cache: &State<ImageCache>,
-    _config: &State<AppConfig>,
+    config: &State<AppConfig>,
     image_proxy: &State<ImageProxy>,
+    scraper: &State<InstagramScraper>,
+    cache: &State<InstagramCache>,
 ) -> Result<ImageResponse, ApiError> {
+    log::debug!("Proxying image for user '{}', URL: {}", username, url);
+    
+    // Whitelist check
+    if let Some(whitelist) = &config.instagram_username_whitelist {
+        if !whitelist.contains(&username.to_string()) {
+            log::warn!("Username '{}' not in whitelist", username);
+            return Err(ApiError::ScraperError(ScraperError::UnauthorizedAccess(format!("Username '{}' not allowed", username))));
+        }
+    }
+    
+    // Verify URL belongs to the user by checking against cached user data
+    let user_data = match cache.get_user_even_expired(username) {
+        Some((user, _)) => {
+            log::debug!("Found cached user data for '{}'", username);
+            user
+        },
+        None => {
+            // Try to fetch user data if not in cache
+            log::debug!("No cached data for '{}', fetching fresh data", username);
+            match scraper.scrape_user(username).await {
+                Ok(user) => {
+                    cache.store_user(user.clone());
+                    user
+                },
+                Err(err) => {
+                    log::error!("Failed to fetch user data for '{}': {:?}", username, err);
+                    return Err(ApiError::ScraperError(err))
+                }
+            }
+        }
+    };
+    
+    // Check if URL belongs to user's content using the new method
+    if !user_data.is_content_url(url) {
+        log::warn!("URL '{}' does not belong to user '{}'", url, username);
+        log::debug!("User has {} posts and {} reels", 
+            user_data.posts.as_ref().map_or(0, |p| p.len()),
+            user_data.reels.as_ref().map_or(0, |r| r.len()));
+        
+        return Err(ApiError::ScraperError(ScraperError::UnauthorizedAccess(
+            format!("URL '{}' does not belong to user '{}'", url, username)
+        )));
+    }
+    
+    log::debug!("URL validation passed for '{}'", url);
+    
     // Check cache first
     if let Some((image_data, content_type)) = image_cache.get_image(url) {
         log::info!("Image found in cache: {}", url);

@@ -18,7 +18,7 @@ Scrapn is a REST API built with Rust and Rocket that provides access to Instagra
 - `GET /instagram/<username>` - Get full profile data for an Instagram user
 - `GET /instagram/<username>/posts` - Get only posts for an Instagram user
 - `GET /instagram/<username>/reels` - Get only reels for an Instagram user
-- `GET /instagram/image?url=<encoded_url>` - Proxy for Instagram CDN images with permanent caching
+- `GET /instagram/<username>/image?url=<encoded_url>` - Proxy for Instagram CDN images with permanent caching
 
 ## Response Format
 
@@ -39,16 +39,47 @@ The image proxy endpoint returns the image data directly with the appropriate co
 To use the image proxy, you need to URL-encode the Instagram CDN URL:
 
 ```
-/instagram/image?url=https%3A%2F%2Fscontent-iad3-2.cdninstagram.com%2Fv%2Ft51.2885-15%2F123456_789012345678901_1234567890123456789_n.jpg%3F...
+/instagram/<username>/image?url=https%3A%2F%2Fscontent-iad3-2.cdninstagram.com%2Fv%2Ft51.2885-15%2F123456_789012345678901_1234567890123456789_n.jpg%3F...
 ```
+
+**Note:** The image proxy now requires:
+1. A valid username that's on the whitelist (if enabled)
+2. The URL must match one of the user's profile picture, posts, or reels
+
+#### Smart URL Matching
+
+The image proxy now implements intelligent URL matching that can recognize the same image served from different CDN servers or with different URL parameters. This provides several advantages:
+
+- Works with various Instagram CDN domains (scontent-iad3-2.cdninstagram.com, scontent-atl3-1.cdninstagram.com, etc.)
+- Handles URL differences between user data and client requests (different parameters, encoding formats)
+- Extracts and matches image identifiers even when the full URL differs
+- Supports both direct matches and pattern-based matches of image resources
+
+This means you can request an image using any valid Instagram CDN URL variation as long as it references the same underlying image associated with the user.
+
+**Example:**
+
+If a post in the user data contains the image URL:
+```
+https://scontent-atl3-1.cdninstagram.com/v/t51.2885-15/497961779_18033097154648370_200386581629336489_n.jpg?...
+```
+
+All of these URLs would successfully pass validation:
+```
+https://scontent-lga3-3.cdninstagram.com/v/t51.2885-15/497961779_18033097154648370_200386581629336489_n.jpg?...
+https://scontent-iad3-2.cdninstagram.com/v/t51.2885-15/497961779_18033097154648370_200386581629336489_n.jpg?...
+```
+
+The system identifies the image by its unique identifiers rather than requiring an exact URL match.
 
 #### URL Encoding Examples
 
 JavaScript:
 ```javascript
+const username = "instagram_user";
 const instagramUrl = "https://scontent-lga3-3.cdninstagram.com/v/t51.2885-15/123456.jpg?param1=value1&param2=value2";
 const encodedUrl = encodeURIComponent(instagramUrl);
-const proxyUrl = `/instagram/image?url=${encodedUrl}`;
+const proxyUrl = `/instagram/${username}/image?url=${encodedUrl}`;
 
 // Use in HTML
 const imgElement = document.createElement('img');
@@ -60,9 +91,10 @@ Python:
 ```python
 import urllib.parse
 
+username = "instagram_user"
 instagram_url = "https://scontent-lga3-3.cdninstagram.com/v/t51.2885-15/123456.jpg?param1=value1&param2=value2"
 encoded_url = urllib.parse.quote(instagram_url)
-proxy_url = f"/instagram/image?url={encoded_url}"
+proxy_url = f"/instagram/{username}/image?url={encoded_url}"
 ```
 
 This helps circumvent direct hotlinking restrictions and provides permanent caching of images. Benefits include:
@@ -72,6 +104,9 @@ This helps circumvent direct hotlinking restrictions and provides permanent cach
 - Uses optimized request headers to bypass CDN restrictions
 - Provides consistent access to Instagram images even if URLs change
 - Reduces bandwidth usage through permanent caching
+- Improves security by validating image ownership with the specified user
+- Prevents unauthorized proxying of arbitrary external images
+- Handles different CDN domains and URL parameters automatically
 
 #### Content Type Detection
 
