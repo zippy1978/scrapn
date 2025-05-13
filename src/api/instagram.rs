@@ -1,116 +1,15 @@
 use rocket::serde::json::Json;
 use rocket::State;
-use rocket::http::Status;
+use rocket::http::ContentType;
 use rocket::{request::Request, response::{self, Response, Responder}};
-use serde_json::json;
+use std::io::Cursor;
 
 use crate::models::instagram::{InstagramUserResponse, InstagramPostsResponse, InstagramReelsResponse};
 use crate::scrapers::instagram::{InstagramScraper, ScraperError};
-use crate::cache::InstagramCache;
+use crate::cache::{InstagramCache, ImageCache};
 use crate::config::AppConfig;
-
-#[derive(Debug)]
-pub enum ApiError {
-    ScraperError(ScraperError),
-    SerializationError(String),
-}
-
-impl From<ScraperError> for ApiError {
-    fn from(error: ScraperError) -> Self {
-        ApiError::ScraperError(error)
-    }
-}
-
-impl<'r> rocket::response::Responder<'r, 'static> for ApiError {
-    fn respond_to(self, _: &'r rocket::Request<'_>) -> rocket::response::Result<'static> {
-        match self {
-            ApiError::ScraperError(ScraperError::ProfileNotFound) => {
-                rocket::Response::build()
-                    .status(Status::NotFound)
-                    .sized_body(None, std::io::Cursor::new("Profile not found"))
-                    .ok()
-            },
-            ApiError::ScraperError(ScraperError::PrivateProfile) => {
-                let body = json!({
-                    "error": "Profile is private",
-                    "message": "The requested profile is private and cannot be accessed"
-                }).to_string();
-                
-                rocket::Response::build()
-                    .status(Status::Forbidden)
-                    .sized_body(None, std::io::Cursor::new(body))
-                    .ok()
-            },
-            ApiError::ScraperError(ScraperError::RateLimited) => {
-                let body = json!({
-                    "error": "Rate limited",
-                    "message": "Too many requests, please try again later"
-                }).to_string();
-                
-                rocket::Response::build()
-                    .status(Status::TooManyRequests)
-                    .sized_body(None, std::io::Cursor::new(body))
-                    .ok()
-            },
-            ApiError::ScraperError(ScraperError::UnauthorizedAccess(message)) => {
-                let body = json!({
-                    "error": "Unauthorized",
-                    "message": message
-                }).to_string();
-                
-                rocket::Response::build()
-                    .status(Status::Unauthorized)
-                    .sized_body(None, std::io::Cursor::new(body))
-                    .ok()
-            },
-            ApiError::ScraperError(ScraperError::ProxyError(error)) => {
-                let body = json!({
-                    "error": "Proxy error",
-                    "message": error
-                }).to_string();
-                
-                rocket::Response::build()
-                    .status(Status::BadGateway)
-                    .sized_body(None, std::io::Cursor::new(body))
-                    .ok()
-            },
-            ApiError::ScraperError(ScraperError::AllProxiesFailed) => {
-                let body = json!({
-                    "error": "All proxies failed",
-                    "message": "All configured proxies failed to connect"
-                }).to_string();
-                
-                rocket::Response::build()
-                    .status(Status::ServiceUnavailable)
-                    .sized_body(None, std::io::Cursor::new(body))
-                    .ok()
-            },
-            ApiError::ScraperError(ScraperError::NetworkError(error)) => {
-                let body = json!({
-                    "error": "Network error",
-                    "message": error.to_string()
-                }).to_string();
-                
-                rocket::Response::build()
-                    .status(Status::ServiceUnavailable)
-                    .sized_body(None, std::io::Cursor::new(body))
-                    .ok()
-            },
-            ApiError::ScraperError(ScraperError::ParsingError(e)) => {
-                rocket::Response::build()
-                    .status(Status::InternalServerError)
-                    .sized_body(None, std::io::Cursor::new(format!("Error parsing Instagram page: {}", e)))
-                    .ok()
-            },
-            ApiError::SerializationError(e) => {
-                rocket::Response::build()
-                    .status(Status::InternalServerError)
-                    .sized_body(None, std::io::Cursor::new(e))
-                    .ok()
-            }
-        }
-    }
-}
+use crate::images::ImageProxy;
+use crate::api::ApiError;
 
 #[get("/<username>")]
 pub async fn get_user(
@@ -277,5 +176,63 @@ pub async fn get_reels(
                 Err(err.into())
             }
         }
+    }
+}
+
+// Responder for image data
+pub struct ImageResponse {
+    pub data: Vec<u8>,
+    pub content_type: String,
+}
+
+impl<'r> Responder<'r, 'static> for ImageResponse {
+    fn respond_to(self, _: &'r Request<'_>) -> response::Result<'static> {
+        // Convert content type string to ContentType
+        let content_type = match self.content_type.as_str() {
+            "image/jpeg" => ContentType::JPEG,
+            "image/png" => ContentType::PNG,
+            "image/gif" => ContentType::GIF,
+            "image/webp" => ContentType::new("image", "webp"),
+            "image/bmp" => ContentType::new("image", "bmp"),
+            "image/tiff" => ContentType::new("image", "tiff"),
+            "image/x-icon" => ContentType::new("image", "x-icon"),
+            _ => ContentType::JPEG, // Default if unknown
+        };
+        
+        Response::build()
+            .header(content_type)
+            .sized_body(None, Cursor::new(self.data))
+            .ok()
+    }
+}
+
+#[get("/image?<url>")]
+pub async fn proxy_image(
+    url: &str,
+    image_cache: &State<ImageCache>,
+    _config: &State<AppConfig>,
+    image_proxy: &State<ImageProxy>,
+) -> Result<ImageResponse, ApiError> {
+    // Check cache first
+    if let Some((image_data, content_type)) = image_cache.get_image(url) {
+        log::info!("Image found in cache: {}", url);
+        return Ok(ImageResponse {
+            data: image_data,
+            content_type,
+        });
+    }
+
+    log::info!("Image not found in cache: {}", url);
+    
+    match image_proxy.fetch_image(url).await {
+        Ok((image_data, content_type)) => {
+            // Store in cache
+            image_cache.store_image(url, image_data.clone(), content_type.clone());
+            Ok(ImageResponse {
+                data: image_data,
+                content_type,
+            })
+        },
+        Err(err) => Err(err.into()),
     }
 } 

@@ -18,10 +18,11 @@ Scrapn is a REST API built with Rust and Rocket that provides access to Instagra
 - `GET /instagram/<username>` - Get full profile data for an Instagram user
 - `GET /instagram/<username>/posts` - Get only posts for an Instagram user
 - `GET /instagram/<username>/reels` - Get only reels for an Instagram user
+- `GET /instagram/image?url=<encoded_url>` - Proxy for Instagram CDN images with permanent caching
 
 ## Response Format
 
-All endpoints return JSON with the following structure:
+All data endpoints return JSON with the following structure:
 
 ```json
 {
@@ -30,6 +31,73 @@ All endpoints return JSON with the following structure:
   "cache_age": 3600      // Age of the cached data in seconds (null if not from cache)
 }
 ```
+
+The image proxy endpoint returns the image data directly with the appropriate content type header.
+
+### Using the Image Proxy
+
+To use the image proxy, you need to URL-encode the Instagram CDN URL:
+
+```
+/instagram/image?url=https%3A%2F%2Fscontent-iad3-2.cdninstagram.com%2Fv%2Ft51.2885-15%2F123456_789012345678901_1234567890123456789_n.jpg%3F...
+```
+
+#### URL Encoding Examples
+
+JavaScript:
+```javascript
+const instagramUrl = "https://scontent-lga3-3.cdninstagram.com/v/t51.2885-15/123456.jpg?param1=value1&param2=value2";
+const encodedUrl = encodeURIComponent(instagramUrl);
+const proxyUrl = `/instagram/image?url=${encodedUrl}`;
+
+// Use in HTML
+const imgElement = document.createElement('img');
+imgElement.src = proxyUrl;
+document.body.appendChild(imgElement);
+```
+
+Python:
+```python
+import urllib.parse
+
+instagram_url = "https://scontent-lga3-3.cdninstagram.com/v/t51.2885-15/123456.jpg?param1=value1&param2=value2"
+encoded_url = urllib.parse.quote(instagram_url)
+proxy_url = f"/instagram/image?url={encoded_url}"
+```
+
+This helps circumvent direct hotlinking restrictions and provides permanent caching of images. Benefits include:
+
+- Avoids browser-side CORS issues
+- Adds proper caching headers
+- Uses optimized request headers to bypass CDN restrictions
+- Provides consistent access to Instagram images even if URLs change
+- Reduces bandwidth usage through permanent caching
+
+#### Content Type Detection
+
+The image proxy automatically detects the correct content type (MIME type) for images using:
+
+1. Response headers from Instagram CDN
+2. File signature analysis (magic numbers) as fallback
+
+Supported formats include:
+- JPEG (`image/jpeg`)
+- PNG (`image/png`)
+- GIF (`image/gif`)
+- WebP (`image/webp`)
+- BMP (`image/bmp`)
+- TIFF (`image/tiff`)
+- ICO (`image/x-icon`)
+
+#### Image Caching
+
+Images are cached permanently in memory to:
+- Reduce bandwidth usage
+- Decrease load times for frequently accessed images
+- Limit requests to Instagram's CDN
+- Provide image availability even if the source is temporarily unavailable
+
+**Note:** Since caching is in-memory, images are lost if the server restarts.
 
 ## Configuration
 

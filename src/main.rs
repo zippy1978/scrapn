@@ -7,10 +7,11 @@ mod config;
 mod models;
 mod proxy;
 mod scrapers;
+mod images;
 
 use std::env;
 
-use cache::InstagramCache;
+use cache::{InstagramCache, ImageCache};
 use config::AppConfig;
 use proxy::ProxyManager;
 use dotenv::dotenv;
@@ -24,6 +25,7 @@ use rocket::{
     Config,
 };
 use scrapers::instagram::InstagramScraper;
+use images::ImageProxy;
 use scrapn::cors::CORS;
 
 #[launch]
@@ -74,10 +76,20 @@ async fn rocket() -> _ {
     }
 
     // Create Instagram scraper
-    let instagram_scraper = InstagramScraper::new(config.clone(), proxy_manager);
+    let instagram_scraper = InstagramScraper::new(config.clone(), proxy_manager.clone());
 
     // Create Instagram cache
     let instagram_cache = InstagramCache::new(config.instagram_cache_duration);
+    
+    // Create Instagram image cache (cached permanently)
+    let instagram_image_cache = ImageCache::new();
+    info!("Instagram image proxy cache initialized (permanent storage)");
+    
+    // Create image proxy
+    let image_proxy = ImageProxy::new(
+        config.timeout,
+    );
+    info!("Image proxy initialized");
 
     info!(
         "Starting Scrapn API server on {}:{}",
@@ -89,6 +101,8 @@ async fn rocket() -> _ {
         .attach(CORS)
         .manage(instagram_scraper)
         .manage(instagram_cache)
+        .manage(instagram_image_cache)
+        .manage(image_proxy)
         .manage(config.clone())
         .mount(
             "/instagram",
@@ -96,6 +110,7 @@ async fn rocket() -> _ {
                 api::instagram::get_user,
                 api::instagram::get_posts,
                 api::instagram::get_reels,
+                api::instagram::proxy_image,
             ],
         )
 }

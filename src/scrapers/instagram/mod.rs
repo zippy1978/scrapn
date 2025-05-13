@@ -1,7 +1,7 @@
 use scraper::{Html, Selector};
 use reqwest::{Client, Proxy};
 use regex::Regex;
-use serde_json::{Value, json};
+use serde_json::Value;
 use chrono::{Utc, TimeZone};
 use std::time::Duration;
 use thiserror::Error;
@@ -52,7 +52,7 @@ impl InstagramScraper {
             proxy_manager: Some(proxy_manager),
         }
     }
-    
+  
     pub async fn scrape_user(&self, username: &str) -> Result<InstagramUser, ScraperError> {
         info!("Scraping Instagram user: {}", username);
         
@@ -850,28 +850,6 @@ impl InstagramScraper {
         }
     }
     
-    fn extract_from_shared_data(&self, html: &str, username: &str) -> Option<InstagramUser> {
-        let re = Regex::new(r#"window\._sharedData = (.+?);</script>"#).ok()?;
-        let caps = re.captures(html)?;
-        
-        if let Ok(json) = serde_json::from_str::<Value>(&caps[1]) {
-            let user_json = json
-                .get("entry_data")?
-                .get("ProfilePage")?
-                .get(0)?
-                .get("graphql")?
-                .get("user")?;
-            
-            return self.extract_user_data_from_json(&json!({ "graphql": { "user": user_json } }), username);
-        }
-        
-        // Try alternative approaches if the above fails
-        if let Some(user) = self.extract_from_additional_data_sources(html, username) {
-            return Some(user);
-        }
-        
-        None
-    }
     
     fn extract_from_additional_data_sources(&self, html: &str, username: &str) -> Option<InstagramUser> {
         // Try to find additional JSON data patterns in the page
