@@ -3,6 +3,9 @@ use rocket::State;
 use rocket::http::ContentType;
 use rocket::{request::Request, response::{self, Response, Responder}};
 use std::io::Cursor;
+use md5;
+use rocket::http::Header;
+use serde;
 
 use crate::models::instagram::{InstagramUserResponse, InstagramPostsResponse, InstagramReelsResponse};
 use crate::scrapers::instagram::{InstagramScraper, ScraperError};
@@ -17,7 +20,7 @@ pub async fn get_user(
     scraper: &State<InstagramScraper>,
     cache: &State<InstagramCache>,
     config: &State<AppConfig>,
-) -> Result<Json<InstagramUserResponse>, ApiError> {
+) -> Result<JsonWithCache<InstagramUserResponse>, ApiError> {
     // Whitelist check
     if let Some(whitelist) = &config.instagram_username_whitelist {
         if !whitelist.contains(&username.to_string()) {
@@ -27,11 +30,16 @@ pub async fn get_user(
     
     // Check cache first (non-expired data)
     if let Some((user, age)) = cache.get_user(username) {
-        return Ok(Json(InstagramUserResponse {
-            data: user,
+        return Ok(JsonWithCache {
+            inner: InstagramUserResponse {
+                data: user,
+                from_cache: true,
+                cache_age: Some(age),
+            },
             from_cache: true,
             cache_age: Some(age),
-        }));
+            cache_duration: cache.cache_duration.as_secs(),
+        });
     }
     
     // Try to scrape fresh data
@@ -40,11 +48,16 @@ pub async fn get_user(
             // Successfully retrieved fresh data, store in cache
             cache.store_user(user.clone());
             
-            Ok(Json(InstagramUserResponse {
-                data: user,
+            Ok(JsonWithCache {
+                inner: InstagramUserResponse {
+                    data: user,
+                    from_cache: false,
+                    cache_age: None,
+                },
                 from_cache: false,
                 cache_age: None,
-            }))
+                cache_duration: cache.cache_duration.as_secs(),
+            })
         },
         Err(err) => {
             // Scraping failed, try to use expired cache data as fallback
@@ -52,11 +65,16 @@ pub async fn get_user(
                 // Log that we're using expired cache as fallback
                 log::warn!("Using expired cache for {} as fallback due to scraping error: {:?}", username, err);
                 
-                Ok(Json(InstagramUserResponse {
-                    data: user,
+                Ok(JsonWithCache {
+                    inner: InstagramUserResponse {
+                        data: user,
+                        from_cache: true,
+                        cache_age: Some(age),
+                    },
                     from_cache: true,
                     cache_age: Some(age),
-                }))
+                    cache_duration: cache.cache_duration.as_secs(),
+                })
             } else {
                 // No cache data available, return the error
                 Err(err.into())
@@ -71,7 +89,7 @@ pub async fn get_posts(
     scraper: &State<InstagramScraper>,
     cache: &State<InstagramCache>,
     config: &State<AppConfig>,
-) -> Result<Json<InstagramPostsResponse>, ApiError> {
+) -> Result<JsonWithCache<InstagramPostsResponse>, ApiError> {
     // Whitelist check
     if let Some(whitelist) = &config.instagram_username_whitelist {
         if !whitelist.contains(&username.to_string()) {
@@ -81,11 +99,16 @@ pub async fn get_posts(
     
     // Check cache first (non-expired data)
     if let Some((posts, age)) = cache.get_posts(username) {
-        return Ok(Json(InstagramPostsResponse {
-            data: posts,
+        return Ok(JsonWithCache {
+            inner: InstagramPostsResponse {
+                data: posts,
+                from_cache: true,
+                cache_age: Some(age),
+            },
             from_cache: true,
             cache_age: Some(age),
-        }));
+            cache_duration: cache.cache_duration.as_secs(),
+        });
     }
     
     // Try to scrape fresh data
@@ -97,11 +120,16 @@ pub async fn get_posts(
             // Return posts
             let posts = user.posts.unwrap_or_default();
             
-            Ok(Json(InstagramPostsResponse {
-                data: posts,
+            Ok(JsonWithCache {
+                inner: InstagramPostsResponse {
+                    data: posts,
+                    from_cache: false,
+                    cache_age: None,
+                },
                 from_cache: false,
                 cache_age: None,
-            }))
+                cache_duration: cache.cache_duration.as_secs(),
+            })
         },
         Err(err) => {
             // Scraping failed, try to use expired cache data as fallback
@@ -109,11 +137,16 @@ pub async fn get_posts(
                 // Log that we're using expired cache as fallback
                 log::warn!("Using expired cache for {}/posts as fallback due to scraping error: {:?}", username, err);
                 
-                Ok(Json(InstagramPostsResponse {
-                    data: posts,
+                Ok(JsonWithCache {
+                    inner: InstagramPostsResponse {
+                        data: posts,
+                        from_cache: true,
+                        cache_age: Some(age),
+                    },
                     from_cache: true,
                     cache_age: Some(age),
-                }))
+                    cache_duration: cache.cache_duration.as_secs(),
+                })
             } else {
                 // No cache data available, return the error
                 Err(err.into())
@@ -128,7 +161,7 @@ pub async fn get_reels(
     scraper: &State<InstagramScraper>,
     cache: &State<InstagramCache>,
     config: &State<AppConfig>,
-) -> Result<Json<InstagramReelsResponse>, ApiError> {
+) -> Result<JsonWithCache<InstagramReelsResponse>, ApiError> {
     // Whitelist check
     if let Some(whitelist) = &config.instagram_username_whitelist {
         if !whitelist.contains(&username.to_string()) {
@@ -138,11 +171,16 @@ pub async fn get_reels(
     
     // Check cache first (non-expired data)
     if let Some((reels, age)) = cache.get_reels(username) {
-        return Ok(Json(InstagramReelsResponse {
-            data: reels,
+        return Ok(JsonWithCache {
+            inner: InstagramReelsResponse {
+                data: reels,
+                from_cache: true,
+                cache_age: Some(age),
+            },
             from_cache: true,
             cache_age: Some(age),
-        }));
+            cache_duration: cache.cache_duration.as_secs(),
+        });
     }
     
     // Try to scrape fresh data
@@ -154,11 +192,16 @@ pub async fn get_reels(
             // Return reels
             let reels = user.reels.unwrap_or_default();
             
-            Ok(Json(InstagramReelsResponse {
-                data: reels,
+            Ok(JsonWithCache {
+                inner: InstagramReelsResponse {
+                    data: reels,
+                    from_cache: false,
+                    cache_age: None,
+                },
                 from_cache: false,
                 cache_age: None,
-            }))
+                cache_duration: cache.cache_duration.as_secs(),
+            })
         },
         Err(err) => {
             // Scraping failed, try to use expired cache data as fallback
@@ -166,11 +209,16 @@ pub async fn get_reels(
                 // Log that we're using expired cache as fallback
                 log::warn!("Using expired cache for {}/reels as fallback due to scraping error: {:?}", username, err);
                 
-                Ok(Json(InstagramReelsResponse {
-                    data: reels,
+                Ok(JsonWithCache {
+                    inner: InstagramReelsResponse {
+                        data: reels,
+                        from_cache: true,
+                        cache_age: Some(age),
+                    },
                     from_cache: true,
                     cache_age: Some(age),
-                }))
+                    cache_duration: cache.cache_duration.as_secs(),
+                })
             } else {
                 // No cache data available, return the error
                 Err(err.into())
@@ -186,7 +234,7 @@ pub struct ImageResponse {
 }
 
 impl<'r> Responder<'r, 'static> for ImageResponse {
-    fn respond_to(self, _: &'r Request<'_>) -> response::Result<'static> {
+    fn respond_to(self, req: &'r Request<'_>) -> response::Result<'static> {
         // Convert content type string to ContentType
         let content_type = match self.content_type.as_str() {
             "image/jpeg" => ContentType::JPEG,
@@ -198,9 +246,22 @@ impl<'r> Responder<'r, 'static> for ImageResponse {
             "image/x-icon" => ContentType::new("image", "x-icon"),
             _ => ContentType::JPEG, // Default if unknown
         };
-        
+        let etag = format!("\"{:x}\"", md5::compute(&self.data));
+        // Check If-None-Match header
+        if let Some(if_none_match) = req.headers().get_one("If-None-Match") {
+            if if_none_match == etag {
+                // ETag matches, return 304 Not Modified
+                return Response::build()
+                    .status(rocket::http::Status::NotModified)
+                    .header(Header::new("ETag", etag))
+                    .header(Header::new("Cache-Control", "public, max-age=86400"))
+                    .ok();
+            }
+        }
         Response::build()
             .header(content_type)
+            .header(Header::new("Cache-Control", "public, max-age=86400"))
+            .header(Header::new("ETag", etag))
             .sized_body(None, Cursor::new(self.data))
             .ok()
     }
@@ -283,5 +344,30 @@ pub async fn proxy_image(
             })
         },
         Err(err) => Err(err.into()),
+    }
+}
+
+pub struct JsonWithCache<T> {
+    pub inner: T,
+    pub from_cache: bool,
+    pub cache_age: Option<u64>,
+    pub cache_duration: u64,
+}
+
+impl<'r, T: serde::Serialize> Responder<'r, 'static> for JsonWithCache<T> {
+    fn respond_to(self, _: &'r Request<'_>) -> response::Result<'static> {
+        let mut response = Response::build();
+        response.header(ContentType::JSON);
+        // Set cache headers
+        if self.from_cache {
+            // If from cache, set max-age to remaining cache duration
+            let max_age = self.cache_age.map(|age| self.cache_duration.saturating_sub(age)).unwrap_or(self.cache_duration);
+            response.header(Header::new("Cache-Control", format!("public, max-age={}", max_age)));
+        } else {
+            // If fresh, set max-age to full cache duration
+            response.header(Header::new("Cache-Control", format!("public, max-age={}", self.cache_duration)));
+        }
+        response.sized_body(None, Cursor::new(serde_json::to_vec(&self.inner).unwrap()));
+        response.ok()
     }
 } 

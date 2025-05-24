@@ -31,7 +31,7 @@ impl<T: Clone> CacheEntry<T> {
 
 pub struct InstagramCache {
     users: RwLock<HashMap<String, CacheEntry<InstagramUser>>>,
-    cache_duration: Duration,
+    pub cache_duration: Duration,
 }
 
 impl InstagramCache {
