@@ -55,8 +55,19 @@ impl InstagramScraper {
   
     pub async fn scrape_user(&self, username: &str) -> Result<InstagramUser, ScraperError> {
         info!("Scraping Instagram user: {}", username);
+
+        // First attempt: Try the mobile API endpoint
+        match self.try_mobile_api_endpoint(username).await {
+            Ok(user) => return Ok(user),
+            Err(ScraperError::AllProxiesFailed) => {
+                warn!("All proxies failed for mobile API endpoint, trying HTML scraping");
+            },
+            Err(e) => {
+                warn!("Mobile API endpoint failed: {}, trying HTML scraping", e);
+            }
+        }
         
-        // First attempt: Try the web API endpoint with proxy rotation
+        // Second attempt: Try the web API endpoint with proxy rotation
         match self.try_web_api_endpoint(username).await {
             Ok(user) => return Ok(user),
             Err(ScraperError::AllProxiesFailed) => {
@@ -67,16 +78,7 @@ impl InstagramScraper {
             }
         }
         
-        // Second attempt: Try the mobile API endpoint
-        match self.try_mobile_api_endpoint(username).await {
-            Ok(user) => return Ok(user),
-            Err(ScraperError::AllProxiesFailed) => {
-                warn!("All proxies failed for mobile API endpoint, trying HTML scraping");
-            },
-            Err(e) => {
-                warn!("Mobile API endpoint failed: {}, trying HTML scraping", e);
-            }
-        }
+     
         
         // Third attempt: Try HTML scraping
         match self.try_html_scraping(username).await {
