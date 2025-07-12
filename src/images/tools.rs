@@ -159,8 +159,21 @@ fn resize_image(
             img.resize_exact(target_width, target_height, FilterType::Lanczos3)
         },
         ImageFit::Fill => {
-            // Scale to fill the target dimensions, cropping if necessary
-            img.resize_to_fill(target_width, target_height, FilterType::Lanczos3)
+            // Scale to fill the target dimensions, then crop with focus
+            let (current_width, current_height) = img.dimensions();
+            
+            // Calculate scaling factor to fill the target dimensions
+            let scale_x = target_width as f64 / current_width as f64;
+            let scale_y = target_height as f64 / current_height as f64;
+            let scale = scale_x.max(scale_y); // Use the larger scale to fill
+            
+            // Scale the image
+            let scaled_width = (current_width as f64 * scale) as u32;
+            let scaled_height = (current_height as f64 * scale) as u32;
+            let scaled_img = img.resize(scaled_width, scaled_height, FilterType::Lanczos3);
+            
+            // Now crop from the scaled image using the focus point
+            crop_image(scaled_img, target_width, target_height, params.focus.as_ref())?
         },
         ImageFit::Crop => {
             // Crop to exact dimensions from center or focus point
@@ -172,8 +185,8 @@ fn resize_image(
             pad_image(resized, target_width, target_height)?
         },
         ImageFit::Thumb => {
-            // Create thumbnail (resize to fit)
-            img.thumbnail(target_width, target_height)
+            // Create thumbnail (resize to fit) with high quality filter
+            img.resize(target_width, target_height, FilterType::Lanczos3)
         },
     };
     
