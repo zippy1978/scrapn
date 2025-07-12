@@ -194,4 +194,14 @@ impl ProxyManager {
             }
         }
     }
+    
+    /// Reset all proxies to available state (used for retries)
+    pub fn reset_all_proxies(&self) {
+        let mut proxies_guard = self.proxies.lock().unwrap();
+        for (_, status) in proxies_guard.iter_mut() {
+            status.available = true;
+            status.last_failure = None;
+        }
+        info!("Reset all proxies to available state for retry");
+    }
 } 

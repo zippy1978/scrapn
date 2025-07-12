@@ -6,6 +6,7 @@ pub struct AppConfig {
     pub address: String,
     pub instagram_cache_duration: u64,
     pub timeout: u64,
+    pub max_retries: u32,
     pub user_agent: String,
     pub instagram_username_whitelist: Option<Vec<String>>,
     pub instagram_cookies: Option<String>,
