@@ -143,6 +143,18 @@ impl<'r> rocket::response::Responder<'r, 'static> for ApiError {
                     .sized_body(None, std::io::Cursor::new(body))
                     .ok()
             }
+            ApiError::ImageError(ImageProxyError::ConversionError(error)) => {
+                let body = json!({
+                    "error": "Image conversion error",
+                    "message": error
+                })
+                .to_string();
+
+                rocket::Response::build()
+                    .status(Status::BadRequest)
+                    .sized_body(None, std::io::Cursor::new(body))
+                    .ok()
+            }
            
         }
     }
