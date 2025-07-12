@@ -285,7 +285,6 @@ impl ImageProxyQuery {
                 "jpg" | "jpeg" => crate::images::ImageConversionFormat::Jpg,
                 "png" => crate::images::ImageConversionFormat::Png,
                 "gif" => crate::images::ImageConversionFormat::Gif,
-                "avif" => crate::images::ImageConversionFormat::Avif,
                 _ => return Err(ApiError::ScraperError(crate::scrapers::instagram::ScraperError::ParsingError(
                     format!("Unsupported format: {}", fmt)
                 ))),

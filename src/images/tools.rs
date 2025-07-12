@@ -25,7 +25,6 @@ pub enum ImageConversionFormat {
     Jpg,
     Png,
     Gif,
-    Avif,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -273,13 +272,6 @@ fn encode_image(
                 .map_err(|e| ImageProxyError::ConversionError(format!("WebP encoding failed: {}", e)))?;
             
             Ok((output, "image/webp".to_string()))
-        },
-        ImageConversionFormat::Avif => {
-            // AVIF encoding using the image crate's standard API
-            img.write_to(&mut std::io::Cursor::new(&mut output), image::ImageFormat::Avif)
-                .map_err(|e| ImageProxyError::ConversionError(format!("AVIF encoding failed: {}", e)))?;
-            
-            Ok((output, "image/avif".to_string()))
         },
         ImageConversionFormat::Jpg => {
             let quality = params.quality.unwrap_or(85).min(100);
