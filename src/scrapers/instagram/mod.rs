@@ -90,6 +90,50 @@ impl InstagramScraper {
         }
     }
     
+    /// Scrape user with retry logic - retries only when all proxies fail
+    pub async fn scrape_user_with_retry(&self, username: &str) -> Result<InstagramUser, ScraperError> {
+        let mut last_error = None;
+        
+        for attempt in 0..=self.config.max_retries {
+            if attempt > 0 {
+                info!("Retry attempt {}/{} for user: {}", attempt, self.config.max_retries, username);
+                
+                // Add a small delay between retries to avoid overwhelming the system
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            }
+            
+            match self.scrape_user(username).await {
+                Ok(user) => {
+                    if attempt > 0 {
+                        info!("Successfully scraped user {} after {} retries", username, attempt);
+                    }
+                    return Ok(user);
+                },
+                Err(ScraperError::AllProxiesFailed) => {
+                    warn!("All proxies failed for user {} on attempt {}", username, attempt + 1);
+                    last_error = Some(ScraperError::AllProxiesFailed);
+                    
+                    if attempt < self.config.max_retries {
+                        // Reset proxy availability for retry
+                        if let Some(proxy_manager) = &self.proxy_manager {
+                            proxy_manager.reset_all_proxies();
+                        }
+                        continue;
+                    }
+                },
+                Err(e) => {
+                    // For non-proxy errors, don't retry
+                    warn!("Non-proxy error for user {}: {}", username, e);
+                    return Err(e);
+                }
+            }
+        }
+        
+        // If we get here, all retries failed
+        error!("Failed to scrape user {} after {} retries", username, self.config.max_retries);
+        Err(last_error.unwrap_or(ScraperError::AllProxiesFailed))
+    }
+    
     async fn try_web_api_endpoint(&self, username: &str) -> Result<InstagramUser, ScraperError> {
         // Request the user's profile page using the API-like endpoint
         let url = format!("https://www.instagram.com/{}/?__a=1&__d=dis", username);

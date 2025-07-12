@@ -41,8 +41,8 @@ pub async fn get_user(
         });
     }
     
-    // Try to scrape fresh data
-    match scraper.scrape_user(username).await {
+    // Try to scrape fresh data with retry logic
+    match scraper.scrape_user_with_retry(username).await {
         Ok(user) => {
             // Successfully retrieved fresh data, store in cache
             cache.store_user(user.clone());
@@ -110,8 +110,8 @@ pub async fn get_posts(
         });
     }
     
-    // Try to scrape fresh data
-    match scraper.scrape_user(username).await {
+    // Try to scrape fresh data with retry logic
+    match scraper.scrape_user_with_retry(username).await {
         Ok(user) => {
             // Successfully retrieved fresh data, store in cache
             cache.store_user(user.clone());
@@ -182,8 +182,8 @@ pub async fn get_reels(
         });
     }
     
-    // Try to scrape fresh data
-    match scraper.scrape_user(username).await {
+    // Try to scrape fresh data with retry logic
+    match scraper.scrape_user_with_retry(username).await {
         Ok(user) => {
             // Successfully retrieved fresh data, store in cache
             cache.store_user(user.clone());
