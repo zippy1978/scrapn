@@ -400,7 +400,7 @@ pub async fn proxy_image(
     
     log::debug!("URL validation passed for '{}'", query.url);
     
-    // Check cache first
+    // Step 1: Check if we already have the processed image with the exact conversion params
     if let Some((image_data, content_type)) = image_cache.get_image(&query.url, &conversion_params) {
         log::info!("Processed image found in cache: {} with params: {:?}", query.url, conversion_params);
         return Ok(ImageResponse {
@@ -408,20 +408,56 @@ pub async fn proxy_image(
             content_type,
         });
     }
-
-    log::info!("Processed image not found in cache: {} with params: {:?}", query.url, conversion_params);
     
-    match image_proxy.fetch_and_convert_image(&query.url, &conversion_params).await {
-        Ok((image_data, content_type)) => {
-            // Store in cache
-            image_cache.store_image(&query.url, &conversion_params, image_data.clone(), content_type.clone());
-            Ok(ImageResponse {
-                data: image_data,
-                content_type,
-            })
-        },
-        Err(err) => Err(err.into()),
-    }
+    // Step 2: Check if we have the raw image cached
+    let raw_params = ImageConversionParams::default(); // Empty params for raw image
+    let raw_image_data = if let Some((raw_data, original_content_type)) = image_cache.get_image(&query.url, &raw_params) {
+        log::debug!("Raw image found in cache: {}", query.url);
+        (raw_data, original_content_type)
+    } else {
+        // Step 3: Fetch and cache the raw image
+        log::debug!("Raw image not found in cache, fetching: {}", query.url);
+        match image_proxy.fetch_image(&query.url).await {
+            Ok((raw_data, original_content_type)) => {
+                // Store the raw image in cache
+                image_cache.store_image(&query.url, &raw_params, raw_data.clone(), original_content_type.clone());
+                log::info!("Raw image fetched and cached: {}", query.url);
+                (raw_data, original_content_type)
+            },
+            Err(err) => {
+                log::error!("Failed to fetch raw image '{}': {:?}", query.url, err);
+                return Err(err.into());
+            }
+        }
+    };
+    
+    // Step 4: Convert the raw image if conversion is needed
+    let (processed_data, content_type) = if conversion_params.needs_conversion() {
+        log::debug!("Converting raw image with params: {:?}", conversion_params);
+        match crate::images::tools::convert_image(raw_image_data.0, &conversion_params) {
+            Ok((converted_data, converted_content_type)) => {
+                log::info!("Image converted successfully");
+                (converted_data, converted_content_type)
+            },
+            Err(err) => {
+                log::error!("Failed to convert image: {:?}", err);
+                return Err(err.into());
+            }
+        }
+    } else {
+        // No conversion needed, return the raw image
+        log::debug!("No conversion needed, returning raw image");
+        raw_image_data
+    };
+    
+    // Step 5: Cache the processed image
+    image_cache.store_image(&query.url, &conversion_params, processed_data.clone(), content_type.clone());
+    log::info!("Processed image cached with params: {:?}", conversion_params);
+    
+    Ok(ImageResponse {
+        data: processed_data,
+        content_type,
+    })
 }
 
 pub struct JsonWithCache<T> {

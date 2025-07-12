@@ -1,5 +1,5 @@
 use thiserror::Error;
-use image::{ImageFormat, DynamicImage, GenericImageView};
+use image::{DynamicImage, GenericImageView};
 use image::imageops::FilterType;
 use serde::{Deserialize, Serialize};
 
@@ -92,6 +92,12 @@ impl ImageConversionParams {
         } else {
             parts.join("_")
         }
+    }
+    
+    /// Check if any conversion parameters are set (i.e., if conversion is needed)
+    pub fn needs_conversion(&self) -> bool {
+        self.width.is_some() || self.height.is_some() || self.format.is_some() 
+        || self.quality.is_some() || self.fit.is_some() || self.focus.is_some()
     }
 }
 
@@ -260,37 +266,40 @@ fn encode_image(
     let mut output = Vec::new();
     let format = params.format.as_ref().unwrap_or(&ImageConversionFormat::Jpg);
     
-    let (image_format, content_type) = match format {
+    match format {
         ImageConversionFormat::Webp => {
-            // WebP support requires additional handling
-            return Err(ImageProxyError::ConversionError(
-                "WebP format not yet supported".to_string()
-            ));
+            // WebP encoding using the image crate's standard API
+            img.write_to(&mut std::io::Cursor::new(&mut output), image::ImageFormat::WebP)
+                .map_err(|e| ImageProxyError::ConversionError(format!("WebP encoding failed: {}", e)))?;
+            
+            Ok((output, "image/webp".to_string()))
         },
-        ImageConversionFormat::Jpg => (ImageFormat::Jpeg, "image/jpeg"),
-        ImageConversionFormat::Png => (ImageFormat::Png, "image/png"),
-        ImageConversionFormat::Gif => (ImageFormat::Gif, "image/gif"),
         ImageConversionFormat::Avif => {
-            // AVIF support requires additional handling
-            return Err(ImageProxyError::ConversionError(
-                "AVIF format not yet supported".to_string()
-            ));
+            // AVIF encoding using the image crate's standard API
+            img.write_to(&mut std::io::Cursor::new(&mut output), image::ImageFormat::Avif)
+                .map_err(|e| ImageProxyError::ConversionError(format!("AVIF encoding failed: {}", e)))?;
+            
+            Ok((output, "image/avif".to_string()))
         },
-    };
-    
-    // Handle quality parameter for lossy formats
-    match image_format {
-        ImageFormat::Jpeg => {
+        ImageConversionFormat::Jpg => {
             let quality = params.quality.unwrap_or(85).min(100);
             let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, quality);
             encoder.encode_image(&img)
                 .map_err(|e| ImageProxyError::ConversionError(format!("JPEG encoding failed: {}", e)))?;
+            
+            Ok((output, "image/jpeg".to_string()))
         },
-        _ => {
-            img.write_to(&mut std::io::Cursor::new(&mut output), image_format)
-                .map_err(|e| ImageProxyError::ConversionError(format!("Image encoding failed: {}", e)))?;
-        }
+        ImageConversionFormat::Png => {
+            img.write_to(&mut std::io::Cursor::new(&mut output), image::ImageFormat::Png)
+                .map_err(|e| ImageProxyError::ConversionError(format!("PNG encoding failed: {}", e)))?;
+            
+            Ok((output, "image/png".to_string()))
+        },
+        ImageConversionFormat::Gif => {
+            img.write_to(&mut std::io::Cursor::new(&mut output), image::ImageFormat::Gif)
+                .map_err(|e| ImageProxyError::ConversionError(format!("GIF encoding failed: {}", e)))?;
+            
+            Ok((output, "image/gif".to_string()))
+        },
     }
-    
-    Ok((output, content_type.to_string()))
 } 

@@ -1,5 +1,5 @@
 use std::time::Duration;
-use crate::images::tools::{ImageProxyError, ImageConversionParams};
+use crate::images::tools::ImageProxyError;
 
 pub struct ImageProxy {
     timeout: Duration,
@@ -11,25 +11,7 @@ impl ImageProxy {
             timeout: Duration::from_secs(timeout),
         }
     }
-    
-    // Fetch and optionally convert an image
-    pub async fn fetch_and_convert_image(
-        &self,
-        url: &str,
-        params: &ImageConversionParams,
-    ) -> Result<(Vec<u8>, String), ImageProxyError> {
-        // First fetch the original image
-        let (original_data, original_content_type) = self.fetch_image(url).await?;
-        
-        // If no conversion params, return original
-        if params.width.is_none() && params.height.is_none() && params.format.is_none() 
-           && params.quality.is_none() && params.fit.is_none() && params.focus.is_none() {
-            return Ok((original_data, original_content_type));
-        }
-        
-        // Convert the image using tools
-        crate::images::tools::convert_image(original_data, params)
-    }
+
     
     // Fetch an image from a URL
     pub async fn fetch_image(&self, url: &str) -> Result<(Vec<u8>, String), ImageProxyError> {
