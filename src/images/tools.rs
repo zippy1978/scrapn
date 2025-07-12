@@ -280,9 +280,14 @@ fn encode_image(
     
     match format {
         ImageConversionFormat::Webp => {
-            // WebP encoding using the image crate's standard API
-            img.write_to(&mut std::io::Cursor::new(&mut output), image::ImageFormat::WebP)
-                .map_err(|e| ImageProxyError::ConversionError(format!("WebP encoding failed: {}", e)))?;
+            // WebP encoding with quality support using the webp crate
+            let quality = params.quality.unwrap_or(85).min(100);
+            
+            let encoder = webp::Encoder::from_image(&img)
+                .map_err(|e| ImageProxyError::ConversionError(format!("WebP encoder creation failed: {}", e)))?;
+            
+            let webp_data = encoder.encode(quality as f32);
+            output.extend_from_slice(&webp_data);
             
             Ok((output, "image/webp".to_string()))
         },
