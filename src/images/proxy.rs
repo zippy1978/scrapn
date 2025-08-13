@@ -1,15 +1,24 @@
 use std::time::Duration;
 use crate::images::tools::ImageProxyError;
+use reqwest::Client;
 
 pub struct ImageProxy {
     timeout: Duration,
+    client: Client,
 }
 
 impl ImageProxy {
     pub fn new(timeout: u64) -> Self {
-        Self {
-            timeout: Duration::from_secs(timeout),
-        }
+        let timeout = Duration::from_secs(timeout);
+        let client = reqwest::Client::builder()
+            .timeout(timeout)
+            .pool_max_idle_per_host(100)
+            .pool_idle_timeout(Duration::from_secs(90))
+            .tcp_keepalive(Some(Duration::from_secs(60)))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
+        Self { timeout, client }
     }
 
     
@@ -20,34 +29,31 @@ impl ImageProxy {
 
     // Make actual HTTP request with or without proxy
     async fn make_request(&self, url: &str, proxy_url: Option<&str>) -> Result<(Vec<u8>, String), ImageProxyError> {
-        let client_builder = reqwest::Client::builder()
-            .timeout(self.timeout);
-        
-        // Add proxy if provided
-        let client_builder = if let Some(proxy) = proxy_url {
-            match reqwest::Proxy::all(proxy) {
-                Ok(proxy) => client_builder.proxy(proxy),
+        // Use the shared client unless a proxy is required (proxies are client-wide in reqwest)
+        let client = if let Some(proxy) = proxy_url {
+            let builder = reqwest::Client::builder()
+                .timeout(self.timeout)
+                .pool_max_idle_per_host(100)
+                .pool_idle_timeout(Duration::from_secs(90))
+                .tcp_keepalive(Some(Duration::from_secs(60)));
+            let builder = match reqwest::Proxy::all(proxy) {
+                Ok(proxy) => builder.proxy(proxy),
                 Err(e) => return Err(ImageProxyError::ProxyError(format!("Failed to create proxy: {}", e))),
+            };
+            match builder.build() {
+                Ok(c) => c,
+                Err(e) => return Err(ImageProxyError::ProxyError(format!("Failed to build client: {}", e))),
             }
         } else {
-            client_builder
-        };
-        
-        let client = match client_builder.build() {
-            Ok(client) => client,
-            Err(e) => return Err(ImageProxyError::ProxyError(format!("Failed to build client: {}", e))),
+            self.client.clone()
         };
         
         // Build request with headers matching browser request
         let request = client.get(url)
             .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.4 Safari/605.1.15")
-            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            .header("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
             .header("Accept-Language", "fr-FR,fr;q=0.9")
-            .header("Accept-Encoding", "gzip, deflate, br")
-            .header("Priority", "u=0, i")
-            .header("Sec-Fetch-Dest", "document")
-            .header("Sec-Fetch-Mode", "navigate")
-            .header("Sec-Fetch-Site", "none");
+            .header("Accept-Encoding", "gzip, deflate, br");
         
         match request.send().await {
             Ok(response) => {
