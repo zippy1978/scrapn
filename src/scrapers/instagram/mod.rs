@@ -414,7 +414,7 @@ impl InstagramScraper {
     async fn make_mobile_api_request(&self, url: &str, username: &str, proxy_url: Option<&str>) -> Result<InstagramUser, ScraperError> {
         let client_builder = Client::builder()
             .timeout(Duration::from_secs(self.config.timeout))
-            .user_agent("Instagram 76.0.0.15.395 Android (28/9; 420dpi; 1080x2034; OnePlus; ONEPLUS A6003; OnePlus6; qcom; en_US; 139064830)");
+            .user_agent("Instagram 361.0.0.46.88 Android (33/13; 480dpi; 1080x2340; samsung; SM-S918B; dm3q; qcom; en_US; 674675155)");
             
         // Add proxy if provided
         let client_builder = if let Some(proxy) = proxy_url {
@@ -444,7 +444,6 @@ impl InstagramScraper {
         
         // Build request with mobile API specific headers
         let mut request = client.get(url)
-            .header("User-Agent", "Instagram 219.0.0.12.117 Android")
             .header("Accept", "application/json")
             .header("Accept-Language", "en-US")
             .header("X-IG-App-ID", "936619743392459")
