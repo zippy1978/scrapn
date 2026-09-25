@@ -41,11 +41,6 @@ async fn rocket() -> _ {
         figment = figment.merge(("instagram_username_whitelist", whitelist.split(',').map(|s| s.trim().to_string()).collect::<Vec<String>>()));
     }
 
-    // Merge Instagram cookies if available
-    if let Ok(cookies) = env::var("INSTAGRAM_COOKIES") {
-        figment = figment.merge(("instagram_cookies", cookies));
-    }
-    
     // Merge proxies if available from environment
     if let Ok(proxies) = env::var("PROXIES") {
         figment = figment.merge(("proxies", proxies.split(',').map(|s| s.trim().to_string()).collect::<Vec<String>>()));
