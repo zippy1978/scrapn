@@ -76,6 +76,30 @@ impl<'r> rocket::response::Responder<'r, 'static> for ApiError {
                     .sized_body(None, std::io::Cursor::new(body))
                     .ok()
             }
+            ApiError::ScraperError(ScraperError::UpstreamError(error)) => {
+                let body = json!({
+                    "error": "Instagram error",
+                    "message": error
+                })
+                .to_string();
+
+                rocket::Response::build()
+                    .status(Status::BadGateway)
+                    .sized_body(None, std::io::Cursor::new(body))
+                    .ok()
+            }
+            ApiError::ScraperError(ScraperError::NoProxiesConfigured) => {
+                let body = json!({
+                    "error": "Proxy error",
+                    "message": "No proxies configured"
+                })
+                .to_string();
+
+                rocket::Response::build()
+                    .status(Status::BadGateway)
+                    .sized_body(None, std::io::Cursor::new(body))
+                    .ok()
+            }
             ApiError::ScraperError(ScraperError::AllProxiesFailed) => {
                 let body = json!({
                     "error": "All proxies failed",

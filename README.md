@@ -194,6 +194,12 @@ To get your Instagram cookies:
 
 **Note:** Cookies typically expire after a few weeks or if Instagram detects unusual activity. You may need to refresh them periodically.
 
+### How scraping works
+
+Scrapn uses Instagram's logged-out GraphQL API (`POST /api/graphql/`), the same one the public profile page uses: one query for the profile and one for the latest 12 posts, both through the same proxy connection. The GraphQL `doc_id`s are refreshed automatically from the profile page when Instagram rotates them.
+
+Logged-out responses have no like, comment or view counts, no video URLs and no total post count, so those fields are `null`. `thumbnailUrl` is the same image as `displayUrl`. Post timestamps are decoded from the media id. `postsLimited` is `true` when the profile has more than the returned posts.
+
 ## Building and Running
 
 ### Native Build
